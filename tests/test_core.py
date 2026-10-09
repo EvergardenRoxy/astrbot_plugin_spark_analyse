@@ -45,8 +45,8 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(ProfileError): p.query(thread=-1)
 
     def test_fixed_url(self):
-        self.assertEqual(report_id('https://spark.lucko.me/95tLrddUhW'), '95tLrddUhW')
-        for url in ('http://spark.lucko.me/95tLrddUhW', 'https://localhost/foobar', 'https://spark.lucko.me/foobar?url=http://localhost', 'https://spark.lucko.me@localhost/foobar'):
+        self.assertEqual(report_id('https://spark.lucko.me/SyntheticReport001'), 'SyntheticReport001')
+        for url in ('http://spark.lucko.me/SyntheticReport001', 'https://localhost/foobar', 'https://spark.lucko.me/foobar?url=http://localhost', 'https://spark.lucko.me@localhost/foobar'):
             with self.assertRaises(ProfileError): report_id(url)
 
     def test_history_off_and_isolation(self):

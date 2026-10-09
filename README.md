@@ -28,19 +28,19 @@
 
 ```text
 帮我分析这个 Spark 报告，最近探索新区时卡顿：
-https://spark.lucko.me/95tLrddUhW
+https://spark.lucko.me/<报告ID>
 ```
 
 也可以使用命令：
 
 ```text
-/spark https://spark.lucko.me/95tLrddUhW 最近机器多了以后掉TPS
+/spark https://spark.lucko.me/<报告ID> 最近机器多了以后掉TPS
 ```
 
 询问具体问题时可以写：
 
 ```text
-帮我分析 https://spark.lucko.me/95tLrddUhW 中的 JVM 参数和 GC，有没有优化空间？
+帮我分析 https://spark.lucko.me/<报告ID> 中的 JVM 参数和 GC，有没有优化空间？
 ```
 
 收到请求后，插件发送一次确认，完成后直接回复分析。模型调用失败时会按配置顺序尝试备用模型。

@@ -10,7 +10,7 @@ class LoadTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with patch('spark_core.session.download', AsyncMock(side_effect=TimeoutError())):
                     with self.assertRaisesRegex(LoadTimeout, '下载阶段'):
-                        await s.load('https://spark.lucko.me/95tLrddUhW')
+                        await s.load('https://spark.lucko.me/SyntheticReport001')
                 self.assertIsNone(s.process)
             finally:
                 await s.close()
@@ -30,7 +30,7 @@ class LoadTests(unittest.IsolatedAsyncioTestCase):
                 s = ReportSession(root, cache=cache)
                 try:
                     with patch('spark_core.session.download', fake_download), patch('asyncio.create_subprocess_exec', AsyncMock(return_value=process)), patch.object(s, 'wait_file', AsyncMock(side_effect=TimeoutError())):
-                        with self.assertRaises(LoadTimeout): await s.load('https://spark.lucko.me/95tLrddUhW')
+                        with self.assertRaises(LoadTimeout): await s.load('https://spark.lucko.me/SyntheticReport001')
                 finally:
                     await s.close()
             self.assertEqual(len(downloads), 1)
@@ -44,6 +44,6 @@ class LoadTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with patch('spark_core.session.download', fake_download), patch('asyncio.create_subprocess_exec', AsyncMock(return_value=process)), patch.object(s, 'wait_file', AsyncMock(side_effect=TimeoutError())):
                     with self.assertRaisesRegex(LoadTimeout, '解析/证据包'):
-                        await s.load('https://spark.lucko.me/95tLrddUhW')
+                        await s.load('https://spark.lucko.me/SyntheticReport001')
             finally:
                 await s.close()

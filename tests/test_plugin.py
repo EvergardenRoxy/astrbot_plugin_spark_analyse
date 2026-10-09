@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class Event:
     unified_msg_origin = 'platform:private:alice'
-    message_str = '/spark https://spark.lucko.me/95tLrddUhW server=test problem=lag compare'
+    message_str = '/spark https://spark.lucko.me/SyntheticReport001 server=test problem=lag compare'
     def get_sender_id(self): return 'alice'
     def plain_result(self, text): return text
     stopped = False
@@ -114,7 +114,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {
             'analysis_provider_id':'first', 'fallback_providers':[{'provider_id':'second'}, {'provider_id':'third'}], 'history_enabled':True})
         with patch.object(self.module, 'ReportSession', FakeSession):
-            results = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/95tLrddUhW server=test problem=lag')]
+            results = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001 server=test problem=lag')]
         self.assertEqual(calls, ['first', 'second', 'third'])
         self.assertEqual(sum('使用下一个模型' in r for r in results), 2)
         self.assertEqual(len(plugin.history.list(plugin.owner(Event()), 'test', 'lag')), 1)
@@ -127,7 +127,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {
             'analysis_provider_id':'first', 'fallback_providers':[{'provider_id':'second'}], 'history_enabled':True})
         with patch.object(self.module, 'ReportSession', FakeSession):
-            results = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/95tLrddUhW')]
+            results = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001')]
         self.assertEqual(calls, ['first', 'second'])
         self.assertIn('未生成成功', results[-1])
         self.assertFalse((Path(self.temp.name)/'history.sqlite3').exists())
@@ -166,15 +166,15 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.config['access_mode'] = 'all'
         self.assertTrue(plugin.allowed(event))
         plugin.config['access_mode'] = 'admin_only'
-        event.message_str = '帮我分析 https://spark.lucko.me/95tLrddUhW'
-        for handler in (plugin.auto_analyze(event), plugin.spark_command(event), plugin.analyze_tool(event, 'https://spark.lucko.me/95tLrddUhW')):
+        event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
+        for handler in (plugin.auto_analyze(event), plugin.spark_command(event), plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')):
             results = [r async for r in handler]
             self.assertIn('权限', results[0])
 
     async def test_duplicate_inflight_report_is_quiet(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
-        plugin.inflight_reports.add('95tLrddUhW')
-        result = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/95tLrddUhW')]
+        plugin.inflight_reports.add('SyntheticReport001')
+        result = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001')]
         self.assertEqual(result, [])
         self.assertFalse(plugin.active)
 
@@ -219,7 +219,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         async def send(result): sent.append(result)
         event.send = send
         with patch.object(self.module, 'ReportSession', FakeSession):
-            result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/95tLrddUhW')]
+            result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
             self.assertIn('后台', result[0])
             await asyncio.wait_for(started.wait(), 1)
             self.assertNotIn('后台结果', sent)

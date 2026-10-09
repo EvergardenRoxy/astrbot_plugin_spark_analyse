@@ -11,7 +11,9 @@ async def run():
     with tempfile.TemporaryDirectory() as root:
         s = ReportSession(root)
         try:
-            overview = await s.load(sys.argv[1] if len(sys.argv)>1 else 'https://spark.lucko.me/95tLrddUhW')
+            if len(sys.argv) != 2:
+                raise SystemExit('请显式提供你获授权检查的报告URL；没有默认报告。')
+            overview = await s.load(sys.argv[1])
             runtime = overview['runtime']
             print(json.dumps({'platform': overview['platform'], 'java': runtime['system']['java'],
                               'heap': runtime['heap'], 'platform_gc': runtime['platform_gc'],
