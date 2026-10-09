@@ -32,16 +32,28 @@
     "default": "已收到Spark报告，开始分析流程。",
     "hint": "开始分析前只发送一次。可以写成你喜欢的文字，留空则不回复，最多1000个字符。"
   },
+  "download_proxy_enabled": {
+    "type": "bool",
+    "description": "开启插件下载代理",
+    "default": false,
+    "hint": "默认关闭并直连。开启后仅下载Spark报告使用下方独立代理，不继承AstrBot或环境代理；失败不自动回退直连。"
+  },
+  "download_proxy_url": {
+    "type": "string",
+    "description": "插件下载代理地址",
+    "default": "",
+    "hint": "仅开启代理时使用。例如 http://代理主机:端口；支持HTTP/HTTPS代理，不支持SOCKS。地址必须在AstrBot运行环境中可达，容器中的127.0.0.1指容器本身。如含认证信息请仅在此本地配置，不发送到聊天。"
+  },
   "download_timeout_seconds": {
     "type": "int",
     "description": "下载等待时间（秒）",
     "default": 120,
     "slider": {
       "min": 15,
-      "max": 300,
+      "max": 900,
       "step": 15
     },
-    "hint": "下载报告最多等待多久。默认120秒，网络较慢时可以适当增加。"
+    "hint": "下载报告的总等待时间，默认120秒，最多900秒。慢网络可尝试600或900秒；不改变解析和模型期限，也不放宽体积限制。超时日志包含阶段和已接收字节。"
   },
   "parse_timeout_seconds": {
     "type": "int",

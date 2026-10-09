@@ -15,7 +15,8 @@ from .profile import ProfileError
 
 
 class ReportSession:
-    def __init__(self, root, download_timeout=120, parse_timeout=90, cache=None):
+    def __init__(self, root, download_timeout=120, parse_timeout=90, cache=None, proxy=None):
+        self.proxy = proxy
         self.cache = cache
         self.download_timeout = download_timeout
         self.parse_timeout = parse_timeout
@@ -24,6 +25,7 @@ class ReportSession:
         self.sequence = 0
         self.lock = asyncio.Lock()
         self.overview = None
+        self.failed = False
 
     async def wait_file(self, path, timeout):
         async def wait():
@@ -42,9 +44,9 @@ class ReportSession:
         if not hit:
             logger.info('Spark download start; timeout=%ss', self.download_timeout)
             try:
-                await download(url, target, timeout_seconds=self.download_timeout)
+                await download(url, target, timeout_seconds=self.download_timeout, proxy=self.proxy)
             except TimeoutError as exc:
-                raise LoadTimeout(f'下载阶段超时（{self.download_timeout}秒）；尚未调用分析模型') from exc
+                raise LoadTimeout(f'下载阶段超时（{self.download_timeout}秒）；尚未调用分析模型；{exc}') from exc
             if self.cache:
                 await asyncio.to_thread(self.cache.put, key, target)
         logger.info('Spark download success; decoded_bytes=%s; parse start timeout=%ss',
@@ -66,18 +68,28 @@ class ReportSession:
 
     async def query(self, **arguments):
         async with self.lock:
+            if self.failed:
+                raise ProfileError('查询会话已失效，请重新加载报告')
             i = self.sequence
             temp = self.directory/'request.tmp'
             temp.write_text(json.dumps(arguments, ensure_ascii=False), encoding='utf-8')
             temp.replace(self.directory/f'request-{i}.json')
-            result = await self.wait_file(self.directory/f'response-{i}.json', 30)
+            try:
+                result = await self.wait_file(self.directory/f'response-{i}.json', 30)
+            except (TimeoutError, asyncio.CancelledError):
+                self.failed = True
+                if self.process and self.process.returncode is None:
+                    self.process.kill()
+                raise
             self.sequence += 1
             (self.directory/f'request-{i}.json').unlink()
             (self.directory/f'response-{i}.json').unlink()
             return result
 
     async def close(self):
+        self.failed = True
         if self.process and self.process.returncode is None:
             self.process.kill()
-            await self.process.wait()
-        shutil.rmtree(self.directory)
+            await asyncio.wait_for(self.process.wait(), timeout=5)
+        if self.directory.exists():
+            shutil.rmtree(self.directory)

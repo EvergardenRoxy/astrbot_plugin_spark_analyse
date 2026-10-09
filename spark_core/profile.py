@@ -57,29 +57,68 @@ class Profile:
                     if depth > 512:
                         raise ProfileError('调用深度超限')
                     depths[current] = depth
+            for n in [t, *t.children]:
+                for wi, total in enumerate(n.times):
+                    children_total = sum(t.children[c].times[wi] for c in n.children_refs)
+                    if children_total > total + max(0.001, total*1e-6):
+                        raise ProfileError('子调用采样超过父调用或线程根')
             self.parents.append(parents)
 
     def runtime_metadata(self):
         from google.protobuf.json_format import MessageToDict
         m = self.data.metadata
+        truncations = []
+        budget = [24000]
+        def bounded(value, path):
+            if isinstance(value, dict):
+                result = {}
+                for i, (k, v) in enumerate(value.items()):
+                    if i >= 32 or budget[0] <= 0:
+                        truncations.append(path)
+                        break
+                    key = str(k)[:120]
+                    budget[0] -= len(key)
+                    result[key] = bounded(v, path+'.'+key)
+                return result
+            if isinstance(value, list):
+                if len(value)>32: truncations.append(path)
+                return [bounded(v, path) for v in value[:32] if budget[0]>0]
+            if isinstance(value, str):
+                size = min(12000, max(0, budget[0]))
+                if len(value)>size: truncations.append(path)
+                budget[0] -= min(len(value), size)
+                return value[:size]
+            return value
         def convert(message):
-            return MessageToDict(message, preserving_proto_field_name=True)
+            return bounded(MessageToDict(message, preserving_proto_field_name=True), message.DESCRIPTOR.name)
+        def gc_map(values, path):
+            result = {}
+            for i, (key, value) in enumerate(values.items()):
+                if i >= 32 or budget[0] <= 0:
+                    truncations.append(path)
+                    break
+                if len(key) > 120:
+                    truncations.append(path)
+                bounded_key = bounded(key[:120], path)
+                result[bounded_key] = convert(value)
+            return result
         system = m.system_statistics
         platform = m.platform_statistics
         hardware = {'os': convert(system.os), 'cpu': convert(system.cpu),
                     'java': convert(system.java), 'jvm': convert(system.jvm),
                     'memory': convert(system.memory)}
         # Hardware is only a heuristic cohort; omit Java so upgrading it does not change the label.
-        identity = '|'.join([system.os.name, system.os.arch, system.os.version,
-                             system.cpu.model_name, str(system.cpu.threads)])
+        identity = '|'.join([system.os.name[:120], system.os.arch[:40], system.os.version[:120],
+                             system.cpu.model_name[:200], str(system.cpu.threads)])
         known = bool(system.os.name or system.cpu.model_name)
         tag = 'auto-'+hashlib.sha256(identity.encode()).hexdigest()[:12] if known else ''
         return {'system': hardware, 'heap': convert(platform.memory),
-                'platform_gc': {k: convert(v) for k, v in platform.gc.items()},
-                'system_gc': {k: convert(v) for k, v in system.gc.items()},
+                'platform_gc': gc_map(platform.gc, 'platform_gc'),
+                'system_gc': gc_map(system.gc, 'system_gc'),
                 'server_hint': {'tag': tag, 'basis': identity if known else None,
                                 'confidence': 'heuristic_not_unique',
                                 'warning': '同配置机器可能碰撞；非服务器唯一ID'},
+                'truncated_fields': truncations,
                 'limitations': ['GC averages are not pause timeline', 'physical RAM is not container memory limit']}
 
     def overview(self):
@@ -88,8 +127,8 @@ class Profile:
         s = m.platform_statistics
         return {'fingerprint': self.fingerprint, 'schema': SCHEMA, 'parser': '0.1.0',
                 'runtime': self.runtime_metadata(),
-                'platform': {'type': p.type, 'name': p.name, 'version': p.version,
-                             'minecraft': p.minecraft_version, 'spark': p.spark_version,
+                'platform': {'type': p.type, 'name': p.name[:240], 'version': p.version[:240],
+                             'minecraft': p.minecraft_version[:120], 'spark': p.spark_version[:120],
                              'data_version': p.spark_data_version},
                 'sampling': {'mode': 'execution', 'engine': m.sampler_engine,
                              'interval_us': m.interval, 'start_ms': m.start_time,
@@ -112,7 +151,9 @@ class Profile:
                                    'players': present_number(s, 'players'),
                                    'chunks': present_number(s, 'chunks')}
                                   for w, s in sorted(self.data.time_window_statistics.items())][:120],
-                'limitations': ['scalar absent/zero reported as null', 'no automatic obfuscation mapping',
+                'platform_truncated': any(len(value) > limit for value, limit in (
+                     (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120))),
+                 'limitations': ['scalar absent/zero reported as null', 'no automatic obfuscation mapping',
                                 'class source only; not mod causality', 'thread share is not CPU share']}
 
     def evidence_pack(self):

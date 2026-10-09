@@ -22,7 +22,10 @@ def run():
         ready = directory/'ready.tmp'
         overview = profile.overview()
         overview['evidence_pack'] = profile.evidence_pack()
-        ready.write_text(json.dumps(overview, ensure_ascii=False), encoding='utf-8')
+        encoded = json.dumps(overview, ensure_ascii=False)
+        if len(encoded.encode('utf-8')) > 128*1024:
+            raise ValueError('报告证据包超过128 KiB，拒绝发送无界上下文')
+        ready.write_text(encoded, encoding='utf-8')
         ready.replace(directory/'ready.json')
         sequence = 0
         while not (directory/'stop').exists():

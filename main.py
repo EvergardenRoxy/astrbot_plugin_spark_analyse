@@ -14,11 +14,12 @@ from .spark_core.history import History, compare
 from .spark_core.transport import LINK
 from .spark_core.output import plain_text
 from .spark_core.cache import ProfileCache
+from .spark_core.tasks import cancel_bounded
 from .spark_core.logging_scope import SparkToolLogFilter, spark_analysis_logging
 import logging
 
 
-@register('astrbot_plugin_spark', 'Spark Plugin Contributors', '隔离解析Spark报告并使用专用模型分析', '0.1.9')
+@register('astrbot_plugin_spark', 'Spark Plugin Contributors', '隔离解析Spark报告并使用专用模型分析', '1.0.0')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -142,9 +143,10 @@ class SparkPlugin(Star):
                 acknowledgement = str(self.config.get('acknowledgement_text', '已收到Spark报告，开始分析流程。')).strip()
                 if acknowledgement:
                     yield event.plain_result(acknowledgement[:1000])
-                download_timeout = max(15, min(300, int(self.config.get('download_timeout_seconds', 120))))
+                download_timeout = max(15, min(900, int(self.config.get('download_timeout_seconds', 120))))
                 parse_timeout = max(15, min(300, int(self.config.get('parse_timeout_seconds', 90))))
-                session = ReportSession(self.root, download_timeout=download_timeout, parse_timeout=parse_timeout, cache=self.cache)
+                proxy = str(self.config.get('download_proxy_url', '')).strip() if self.config.get('download_proxy_enabled', False) else None
+                session = ReportSession(self.root, download_timeout=download_timeout, parse_timeout=parse_timeout, cache=self.cache, proxy=proxy)
                 self.sessions.add(session)
                 logger.info('Spark [%s] download/parse start', trace)
                 overview = await session.load('https://spark.lucko.me/'+links[0])
@@ -184,6 +186,7 @@ class SparkPlugin(Star):
                     for item in self.config.get('fallback_providers', [])
                     if isinstance(item, dict) and item.get('provider_id')]))
                 for attempt, provider_id in enumerate(providers):
+                    remaining = set()
                     calls = 0
                     try:
                         logger.info('Spark [%s] model start; attempt=%s/%s provider=%s', trace, attempt+1, len(providers), provider_id)
@@ -205,9 +208,12 @@ class SparkPlugin(Star):
                                 raise TimeoutError('分析模型超过300秒')
                             response = await model_task
                         finally:
-                            if not model_task.done():
-                                model_task.cancel()
-                            await asyncio.gather(model_task, return_exceptions=True)
+                            remaining = await cancel_bounded({model_task})
+                            if remaining:
+                                self.background_tasks.update(remaining)
+                                for task in remaining:
+                                    task.add_done_callback(self.background_tasks.discard)
+                                raise RuntimeError('模型任务未及时取消，停止回退避免重复请求')
                         result = response.completion_text
                         if not result or not result.strip():
                             raise ValueError('分析模型没有返回文字结论')
@@ -217,7 +223,7 @@ class SparkPlugin(Star):
                         raise
                     except Exception as exc:
                         logger.warning('Spark provider attempt %s failed: %s', attempt+1, type(exc).__name__)
-                        if attempt+1 == len(providers):
+                        if remaining or attempt+1 == len(providers):
                             raise
                         yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(exc).__name__}），使用下一个模型继续尝试。')
                 history_id = await asyncio.to_thread(self.history.save, owner, server, problem, overview, result)
@@ -248,13 +254,8 @@ class SparkPlugin(Star):
 
     async def terminate(self):
         logging.getLogger('astrbot').removeFilter(self.tool_log_filter)
-        for task in list(self.background_tasks):
-            task.cancel()
-        if self.background_tasks:
-            await asyncio.gather(*list(self.background_tasks), return_exceptions=True)
-        for task in list(self.tasks):
-            task.cancel()
-        if self.tasks:
-            await asyncio.gather(*list(self.tasks), return_exceptions=True)
+        remaining = await cancel_bounded(self.background_tasks | self.tasks)
+        if remaining:
+            logger.warning('Spark terminate: %s tasks did not stop within 5s', len(remaining))
         for session in list(self.sessions):
             await session.close()
