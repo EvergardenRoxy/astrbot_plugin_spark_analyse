@@ -1,9 +1,7 @@
 import re
 import zlib
-import logging
 import time
-
-logger = logging.getLogger('astrbot.plugin.astrbot_plugin_spark')
+from astrbot.api import logger
 import aiohttp
 from .profile import ProfileError
 from yarl import URL

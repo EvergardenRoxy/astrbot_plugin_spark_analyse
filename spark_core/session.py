@@ -3,9 +3,7 @@ import json
 import shutil
 import sys
 import tempfile
-import logging
-
-logger = logging.getLogger('astrbot.plugin.astrbot_plugin_spark')
+from astrbot.api import logger
 
 class LoadTimeout(TimeoutError):
     pass

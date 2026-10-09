@@ -15,11 +15,9 @@ from .spark_core.transport import LINK
 from .spark_core.output import plain_text
 from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
-from .spark_core.logging_scope import SparkToolLogFilter, spark_analysis_logging
-import logging
 
 
-@register('astrbot_plugin_spark', 'Spark Plugin Contributors', '隔离解析Spark报告并使用专用模型分析', '1.0.0')
+@register('astrbot_plugin_spark', 'Spark Plugin Contributors', '隔离解析Spark报告并使用专用模型分析', '1.0.1')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -35,8 +33,6 @@ class SparkPlugin(Star):
         self.tasks = set()
         self.sessions = set()
         self.gate = asyncio.Semaphore(1)
-        self.tool_log_filter = SparkToolLogFilter()
-        logging.getLogger('astrbot').addFilter(self.tool_log_filter)
 
     def owner(self, event):
         return hashlib.sha256((event.unified_msg_origin+'\0'+event.get_sender_id()).encode()).hexdigest()
@@ -190,14 +186,10 @@ class SparkPlugin(Star):
                     calls = 0
                     try:
                         logger.info('Spark [%s] model start; attempt=%s/%s provider=%s', trace, attempt+1, len(providers), provider_id)
-                        token = spark_analysis_logging.set(True)
-                        try:
-                            model_task = asyncio.create_task(self.context.tool_loop_agent(
-                                event=event, chat_provider_id=provider_id, prompt=prompt,
-                                system_prompt=self.policy+'\n\n回复要求：\n'+(str(self.config.get('analysis_prompt', '')).strip() or self.default_reply_prompt), tools=ToolSet([tool]), max_steps=10,
-                                tool_call_timeout=35))
-                        finally:
-                            spark_analysis_logging.reset(token)
+                        model_task = asyncio.create_task(self.context.tool_loop_agent(
+                            event=event, chat_provider_id=provider_id, prompt=prompt,
+                            system_prompt=self.policy+'\n\n回复要求：\n'+(str(self.config.get('analysis_prompt', '')).strip() or self.default_reply_prompt), tools=ToolSet([tool]), max_steps=10,
+                            tool_call_timeout=35))
                         try:
                             for tick in range(10):
                                 done, _ = await asyncio.wait({model_task}, timeout=30)
@@ -253,7 +245,6 @@ class SparkPlugin(Star):
             logger.info('Spark [%s] cleanup complete', trace)
 
     async def terminate(self):
-        logging.getLogger('astrbot').removeFilter(self.tool_log_filter)
         remaining = await cancel_bounded(self.background_tasks | self.tasks)
         if remaining:
             logger.warning('Spark terminate: %s tasks did not stop within 5s', len(remaining))

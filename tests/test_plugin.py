@@ -59,11 +59,6 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         spec.loader.exec_module(self.module)
 
     def tearDown(self):
-        import logging
-        core_logger = logging.getLogger('astrbot')
-        for f in list(core_logger.filters):
-            if type(f).__name__ == 'SparkToolLogFilter':
-                core_logger.removeFilter(f)
         self.modules.stop()
         self.temp.cleanup()
 
