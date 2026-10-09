@@ -2,6 +2,6 @@ name: astrbot_plugin_spark
 display_name: Spark 报告分析
 desc: 在聊天中分析Minecraft Spark报告，支持专用模型、报告缓存和历史比较。
 version: v1.0.1
-author: Spark Plugin Contributors
+author: Evergarden_Roxy
 astrbot_version: '>=4.16.0'
 repo: https://github.com/EvergardenRoxy/astrbot_plugin_spark_analyse
