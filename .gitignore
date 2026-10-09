@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.graphflow/
+.graphflow-cache/
+graphflow-out/
+*.sqlite3
+*.bin
+dist/
+research/

@@ -1,0 +1,110 @@
+import tempfile
+import unittest
+from pathlib import Path
+from spark_core.profile import Profile, ProfileError
+from spark_core.proto.spark_sampler_pb2 import SamplerData
+from spark_core.history import History, compare
+from spark_core.transport import report_id
+
+
+def sample():
+    d = SamplerData()
+    d.metadata.platform_metadata.name = 'NeoForge'
+    d.metadata.platform_metadata.minecraft_version = '1.21.1'
+    d.metadata.interval = 4000
+    d.time_windows.extend([10, 11])
+    t = d.threads.add(name='Server thread', times=[100, 200], children_refs=[1])
+    t.children.add(class_name='test.Mod', method_name='work', times=[30, 40])
+    t.children.add(class_name='net.Tick', method_name='tick', times=[100, 200], children_refs=[0])
+    return d
+
+
+class CoreTests(unittest.TestCase):
+    def test_self_and_denominator(self):
+        p = Profile(sample().SerializeToString())
+        rows = p.query()['rows']
+        self.assertEqual(rows[0]['node'], 1)
+        self.assertEqual(rows[0]['self_ms'], 230)
+        self.assertAlmostEqual(rows[0]['self_pct'], 230/3)
+        self.assertEqual(p.query(window=10)['denominator_ms'], 100)
+        self.assertEqual([r['node'] for r in p.query(view='callers', node=0)['rows']], [1, 0])
+
+    def test_invalid_refs_and_mode(self):
+        for change in ('cycle', 'mode', 'nan', 'size'):
+            d = sample()
+            if change == 'cycle': d.threads[0].children[0].children_refs.append(1)
+            if change == 'mode': d.metadata.sampler_mode = 1
+            if change == 'nan': d.threads[0].times[0] = float('nan')
+            if change == 'size': d.threads[0].children[0].times.pop()
+            with self.assertRaises(ProfileError): Profile(d.SerializeToString())
+
+    def test_unknown_zero(self):
+        p = Profile(sample().SerializeToString())
+        self.assertIsNone(p.overview()['health']['tps_1m'])
+        with self.assertRaises(ProfileError): p.query(window=99)
+        with self.assertRaises(ProfileError): p.query(thread=-1)
+
+    def test_fixed_url(self):
+        self.assertEqual(report_id('https://spark.lucko.me/95tLrddUhW'), '95tLrddUhW')
+        for url in ('http://spark.lucko.me/95tLrddUhW', 'https://localhost/foobar', 'https://spark.lucko.me/foobar?url=http://localhost', 'https://spark.lucko.me@localhost/foobar'):
+            with self.assertRaises(ProfileError): report_id(url)
+
+    def test_history_off_and_isolation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)/'history.sqlite3'
+            h = History(path)
+            overview = Profile(sample().SerializeToString()).overview()
+            self.assertIsNone(h.save('a','s','p',overview,'ok'))
+            self.assertEqual(h.list('a','s'), [])
+            self.assertFalse(path.exists())
+            h.enabled = True
+            h.save('a','s','p',overview,'ok')
+            self.assertEqual(len(h.list('a','s','p')), 1)
+            self.assertEqual(h.list('b','s','p'), [])
+            self.assertEqual(h.list('a','other','p'), [])
+            self.assertEqual(h.delete('b'), 0)
+            self.assertEqual(h.delete('a'), 1)
+
+    def test_compare_gate(self):
+        before = Profile(sample().SerializeToString()).overview()
+        after = Profile(sample().SerializeToString()).overview()
+        after['sampling']['interval_us'] = 1000
+        self.assertFalse(compare(before, after)['comparable_sampling'])
+
+    def test_evidence_pack_coverage_and_paths(self):
+        p = Profile(sample().SerializeToString())
+        thread = p.evidence_pack()['threads'][0]
+        self.assertEqual(thread['selected_self_ms'], 300)
+        self.assertEqual(thread['selected_self_coverage_pct'], 100)
+        self.assertEqual([r['node'] for r in thread['hotspots'][1]['path']], [1, 0])
+        self.assertEqual(thread['remaining_sampled_ms'], 0)
+
+    def test_evidence_pack_keeps_main_thread(self):
+        d = sample()
+        for i in range(6):
+            d.threads.add(name=f'worker-{i}', times=[1000, 2000])
+        pack = Profile(d.SerializeToString()).evidence_pack()
+        self.assertEqual(pack['threads'][0]['name'], 'Server thread')
+        self.assertEqual(len(pack['threads']), 4)
+        self.assertEqual(pack['omitted_threads'], 3)
+
+    def test_runtime_jvm_and_heuristic_identity(self):
+        d = sample()
+        system = d.metadata.system_statistics
+        system.os.name = 'Windows Server 2022 Datacenter'
+        system.cpu.model_name = 'AMD Ryzen 9 9950X'
+        system.cpu.threads = 6
+        system.java.version = '17.0.20.1'
+        system.java.vm_args = '-Xms4G -Xmx8G -XX:+UseG1GC'
+        d.metadata.platform_statistics.memory.heap.max = 8589934592
+        d.metadata.system_statistics.gc['G1 Young Generation'].total = 7
+        before = Profile(d.SerializeToString()).overview()['runtime']
+        self.assertIn('-Xmx8G', before['system']['java']['vm_args'])
+        self.assertEqual(before['heap']['heap']['max'], '8589934592')
+        self.assertIn('G1 Young Generation', before['system_gc'])
+        system.java.version = '21'
+        after = Profile(d.SerializeToString()).overview()['runtime']
+        self.assertEqual(before['server_hint']['tag'], after['server_hint']['tag'])
+        self.assertEqual(after['server_hint']['confidence'], 'heuristic_not_unique')
+
+if __name__ == '__main__': unittest.main()
