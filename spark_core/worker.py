@@ -34,7 +34,7 @@ def run():
     try:
         raw_path = directory/'profile.bin'
         if raw_path.stat().st_size > 128*1024*1024:
-            raise ProfileError('报告超限')
+            raise ProfileError('报告超限：报告解压后超过 128 MiB，通常是采样时间太长。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
         profile = Profile(raw_path.read_bytes())
         ready = directory/'ready.tmp'
         overview = profile.overview()

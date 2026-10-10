@@ -13,6 +13,10 @@ import re
 SUSTAINED_TPS, SUSTAINED_MSPT = 15, 70
 MILD_TPS, MILD_MSPT = 19.5, 40
 SPIKE_RATIO, SPIKE_MIN_MS = 5, 500
+# A tick has a 50 ms budget. A median tick well inside it leaves the thread waiting for the next tick (spare
+# capacity); a median at or over it leaves no time between ticks, so waits happen inside ticks. MSPT decides
+# this on every platform, unlike method names; TPS is not used because spikes alone can lower it.
+TICK_BUDGET_MS, IDLE_WAIT_BELOW_MSPT = 50, 40
 
 JVM_QUESTION = re.compile(r'JVM|GC|垃圾回收|启动参数|堆内存|Xm[sx]|vm.?args', re.I)
 KEY_VM_ARG = re.compile(r'-(?:Xm[sx]|Xss|XX:[+-]?Use\w*GC\b|XX:[+-]?ZGenerational|XX:(?:Max|Initial|Min)RAMPercentage'
@@ -20,7 +24,8 @@ KEY_VM_ARG = re.compile(r'-(?:Xm[sx]|Xss|XX:[+-]?Use\w*GC\b|XX:[+-]?ZGenerationa
 
 # SHA-256 of whitespace-stripped reply prompts that shipped as the default. A saved config equal to one of
 # them was never customised, so it follows the current default.
-LEGACY_REPLY_DIGESTS = frozenset({'bd585aebaf7f1add846fbc63f4f19c2e1e1a0ec0c973676ef75f0bc6b1d13709'})
+LEGACY_REPLY_DIGESTS = frozenset({'bd585aebaf7f1add846fbc63f4f19c2e1e1a0ec0c973676ef75f0bc6b1d13709',  # up to 1.0.4
+                                  '85e75d8c7d8d2f14b07340053cfffadbc71f548c49c511a4855e1a2ab37717ce'})  # unreleased draft
 
 
 def _digest(text):
@@ -65,9 +70,16 @@ def triage(overview):
         load = 'none'
     spikes = None if peak is None or median is None else peak > SPIKE_MIN_MS and peak > SPIKE_RATIO*median
     threads = (overview.get('evidence_pack') or {}).get('threads') or []
-    main = threads[0] if threads else {}
-    total = main.get('denominator_ms')
-    idle, other = _pct(main.get('idle_between_ticks_ms'), total), _pct(main.get('other_wait_ms'), total)
+    tick = threads[0] if threads else {}
+    wait = _pct(tick.get('wait_ms'), tick.get('denominator_ms'))
+    if median is None:
+        wait_kind = 'unknown'
+    elif median < IDLE_WAIT_BELOW_MSPT:
+        wait_kind = 'between_ticks'
+    elif median >= TICK_BUDGET_MS:
+        wait_kind = 'in_tick'
+    else:
+        wait_kind = 'unknown'
     windows = overview.get('window_health') or []
     players, chunks = _largest(windows, 'players'), _largest(windows, 'chunks')
     entities = (overview.get('world') or {}).get('total_entities')
@@ -79,7 +91,7 @@ def triage(overview):
     signals = {'load': load, 'spikes': spikes, 'tps': _round(tps, 2), 'mspt_median': _round(median),
                'mspt_p95': _round(health.get('mspt_p95')), 'mspt_max': _round(peak),
                'spike_ratio': round(peak/median, 1) if peak is not None and median else None,
-               'main_thread': main.get('name'), 'idle_between_ticks_pct': idle, 'other_wait_pct': other,
+               'tick_thread': tick.get('name'), 'wait_pct': wait, 'wait_kind': wait_kind,
                'players': players, 'chunks': chunks, 'chunks_per_player': per_player, 'entities': entities,
                'sample_seconds': round((end-start)/1000, 1) if start and end and end > start else None,
                'thresholds': {'sustained': f'TPS<{SUSTAINED_TPS} 或 MSPT中位数>{SUSTAINED_MSPT}毫秒',
@@ -100,12 +112,13 @@ def _summary(s):
         parts.append(f"存在偶发尖峰：最慢一次 tick {s['mspt_max']:.0f} 毫秒，约为中位数的 {s['spike_ratio']} 倍")
     elif s['spikes'] is False:
         parts.append('未见明显尖峰')
-    idle, other = s['idle_between_ticks_pct'], s['other_wait_pct']
-    if idle:
-        parts.append(f'主线程约 {idle}% 的采样时间处于 tick 间空闲')
-    if other is not None and other >= 5:
-        parts.append(f'主线程约 {other}% 的时间在 tick 内等待（可能在等区块加载、存档或锁）' if idle else
-                     f'主线程约 {other}% 的时间处于等待，无法区分 tick 间空闲与 tick 内阻塞（方法名不可读时常见）')
+    wait = s['wait_pct']
+    if wait is not None and wait >= 1:
+        parts.append({'between_ticks': f'tick 线程约 {wait}% 的时间在等待，MSPT 中位数远低于 {TICK_BUDGET_MS} 毫秒的 tick 预算，'
+                                       f'这些主要是 tick 之间的空闲（有余量）',
+                      'in_tick': f'tick 线程约 {wait}% 的时间在等待，而 MSPT 中位数已达到 {TICK_BUDGET_MS} 毫秒的 tick 预算，'
+                                 f'tick 之间没有空闲，这些等待发生在 tick 内（在等其他线程、区块加载或锁）',
+                      'unknown': f'tick 线程约 {wait}% 的时间在等待，无法判断是 tick 之间的空闲还是 tick 内的等待'}[s['wait_kind']])
     if s['chunks'] is not None and s['players']:
         parts.append(f"{s['players']} 名玩家，已加载 {s['chunks']} 个区块（每人约 {s['chunks_per_player']:.0f} 个）")
     if s['entities'] is not None:

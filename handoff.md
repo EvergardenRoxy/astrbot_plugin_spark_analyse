@@ -13,7 +13,7 @@ CHANGELOG for that).
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.4 (§9). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 96 (Unreleased, §10-§11), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 96 (§10-§11) -> 99 (§12, Unreleased), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -35,7 +35,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `33b147c` | Review round 2 items 3 and 4: default `admin_only`, trimmed 1.0.3 CHANGELOG (§8) |
 | `8090d18` | Review round 2 item 2: `/spark forget` guard, startup purge in `initialize()` (§8) |
 | `1106402` | Release prep for 1.0.4 (§9). Branch `v1.0.4` holds the same tree as one commit on `main`. |
-| last commit | Prompt rewrite and model-input changes (§10), under `## Unreleased` |
+| `e07adbe` | Prompt rewrite and model-input changes (§10), under `## Unreleased` |
+| `af5fd32` | Review item 1: worker `sys.path` under safe-path modes (§11) |
+| last commit | Reorientation: quick triage, multi-platform wait rule, oversized-report messages (§12) |
 
 ## 2. Changes, reasoning, evidence
 
@@ -229,7 +231,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 71 OK
+python -m unittest discover -s tests        # expect 99 OK
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
@@ -247,7 +249,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Merge `v1.0.4` into `main`: no PR was created by the agent; that is the maintainer's call.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
-- Prompt rewrite phase 2 (§10): per-category tick breakdown. Not started.
+- Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
+  for now, §12). A scratch prototype existed and was never committed.
 - Prompt rewrite (§10) has not been evaluated against a live model yet; use `tools/dump_prompt.py`.
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
@@ -265,6 +268,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   re-reading §2.2, since doing so brings back the extra main-model call.
 - Config schema: keys and types are a compatibility surface for existing installs. A default change only reaches
   new installs (AstrBot fills missing keys only), so treat it as a product decision and note it in CHANGELOG.
+- Do not classify waits (or anything else) by method names that only some platforms or versions use.
+  Between-tick idle versus in-tick wait comes from MSPT in `triage()` (§12).
 - Load thresholds live only in `spark_core/briefing.py`. Prompt files refer to `triage.load` / `triage.spikes`
   and must not restate the numbers (CHANGELOG may, as a record).
 - Every file `main.py` reads with `with_name(...)` must be in `tools/package_plugin.py`'s list
@@ -396,7 +401,7 @@ MSPT median 11.6 / max 1806 ms. Its link is deliberately not recorded anywhere i
 - `reply_prompt.txt` / `analysis_prompt` default (user-editable, rewritten): no platform or audience. The
   first sentence is the verdict. A healthy or mildly loaded report without spikes gets 3-5 sentences.
   Problems get <= ~800 characters with a fixed structure: 结论 / 主要原因 (<= 3) / 建议 (<= 3) /
-  采样限制. `test_shipped_prompt_files_agree` keeps the file and the schema default identical and checks
+  采样限制. (Superseded in §12 by 现状 / 疑似问题点 / 建议先做的检查.) `test_shipped_prompt_files_agree` keeps the file and the schema default identical and checks
   that "QQ", "服主" and "群" are absent.
 
 **Load classes** (`briefing.py`, maintainer-set; the only place these numbers live):
@@ -418,6 +423,7 @@ and sample length, plus a Chinese `summary` sentence. `model_overview()` puts `t
 - `waiting()` adds `idle_between_ticks_ms` and `other_wait_ms` per evidence thread. It sums the inclusive time
   of the outermost JDK wait frame (park, sleep, wait). The time counts as idle when an ancestor is
   `MinecraftServer.waitUntilNextTick` / `waitForTasks`; the sample's park path went through `waitForTasks`.
+  - Superseded in §12: the split was removed and replaced by an MSPT rule.
   - Limitation: it only works with readable (Mojang) method names. On older Forge (SRG ids) between-tick idle
     lands in `other_wait_ms`, and the triage summary then says the two cannot be told apart instead of calling it a stall.
 - `model_overview()` replaces `vm_args` with `{key_flags, other_flag_count, note}` unless the question
@@ -479,3 +485,88 @@ parameter descriptions and the new history note. Each new test failed on the cod
   - AstrBot also handles `sys.frozen` (`process_restart.py`). If the desktop build is frozen,
     `sys.executable` is the app itself and the worker cannot start.
   - Neither is addressed by this fix.
+
+## 12. Reorientation: quick triage, multi-platform (Unreleased)
+
+**Maintainer direction** (given after phase 1):
+- The plugin is for quick triage: describe the current state and point at suspected problems. Root-cause
+  analysis is for experienced people, and the reply says so in one closing sentence.
+- It must hold across server platforms and versions. No rule tuned to the one sample at hand.
+- Plugin servers (Paper, Folia, Leaf) are supported, not only modern mod servers.
+- No new features for now. Phase 2 (per-category breakdown) is shelved.
+
+**Evidence.** Three more maintainer-supplied reports were loaded in scratch with the plugin's own code. Their
+links are not recorded (same concern as F7). Behaviour of the §10 code:
+
+| Platform | What happened |
+|---|---|
+| Folia 26.1.2 | Loaded. Spark reports `name=Bukkit`, `brand=Folia`; the parser ignored `brand`, so the model could not tell Folia from Paper. The tick thread is `Folia Region Scheduler Thread (x5)`. 34.8% of its samples park in the region scheduler's idle loop (`EDFSchedulerThreadPool$TickThreadRunner.run`), not under `waitForTasks`, so idle capacity was reported as "other wait". |
+| Forge 47.4.26 (MC 1.20.1) | Loaded. Runtime method names are SRG ids (`m_12345_`), so `waitUntilNextTick` never matched and all 74.8% of waiting was "other". Most of it is a multithreading mod's worker wait, injected through a mixin into the server task loop: a real stall inside the tick. |
+| Leaf 1.21.8 | Refused: 149.8 MiB decoded (one thread, 61 windows, about 17 h of sampling). The chat message was only "报告超限". |
+| NeoForge 1.21.1 (the §10 sample) | Correct before and after. |
+
+The name-based idle rule therefore failed on two of four platforms, in opposite directions.
+
+**Wait rule (replaces the name-based split):**
+- `Profile.waiting()` returns one number: the sampled ms under the outermost JDK wait frame (park, sleep,
+  wait). Evidence threads carry it as `wait_ms`. `TICK_IDLE_FRAMES`, `idle_between_ticks_ms` and
+  `other_wait_ms` are gone.
+- `briefing.triage()` labels it `wait_kind` from the MSPT median:
+  - below 40 ms -> `between_ticks`: the tick ends well inside the 50 ms budget, so the thread sleeps until
+    the next one.
+  - 50 ms or more -> `in_tick`: there is no time left between ticks, so waits happen inside ticks.
+  - 40-50 ms, or no MSPT -> `unknown`: the model must not call the wait idle or a cause.
+- TPS is not used for this, because spikes alone can pull TPS down while the median tick is short. Folia
+  shows this: TPS 19.0 (load `mild`) with a 7.2 ms median.
+- The rule relies only on spark's own MSPT statistics, which every platform reports. Constants:
+  `TICK_BUDGET_MS = 50`, `IDLE_WAIT_BELOW_MSPT = 40` (the same 40 as the mild-load MSPT threshold).
+- For `in_tick`, the guide tells the model to read the wait hotspot's call path and suggest
+  `/spark profiler start --thread *`, since the real work is on another thread.
+- Results: NeoForge `between_ticks` (60.4%), Folia `between_ticks` (36.3%), Forge `in_tick` (74.8%).
+
+**Platform field:** `overview.platform.brand` (truncated at 120, included in `platform_truncated`). It is an
+empty string when the report has none, as with other platform strings; the Forge sample has none.
+
+**Oversized reports:** the limits are unchanged (16 MiB compressed, 128 MiB decoded, 1,000,000 nodes). Each
+`ProfileError` now says that the profile was probably too long and gives `/spark profiler start --timeout 300`.
+This covers `transport.py` (both size checks), `worker.py` (decoded file) and `profile.py` (node limit).
+All stay under the worker's 200-character error cap. Checked by running the real worker on the Leaf file.
+
+**Prompt files:**
+- `analysis_policy.md`:
+  - Role covers mod and plugin servers; task is "快速理清现状、指出疑似问题点和应先做的检查，不追究根因".
+  - Step 2 checks `platform` name, brand and minecraft first.
+  - Rule 2 defers wait interpretation to `triage.wait_kind`.
+  - Rule 8: advice must fit the report's platform (no Paper settings on a mod server and vice versa). Never
+    advise uninstalling mods or plugins or deleting worlds.
+- `diagnosis_guide.md`:
+  - Readings for `wait_kind`.
+  - New "平台差异" section: SRG names on older Forge (judge by class, source and path, do not guess the
+    method's meaning); `source` is the plugin name on plugin servers; Paper config direction only, without
+    invented setting names; Folia region threads.
+  - Script and event-bus sources now include Skript and plugin listeners.
+  - The `--timeout` line warns that multi-hour profiles can exceed the size limit.
+- `reply_prompt.txt` and the schema default:
+  - Structure is 现状 / 疑似问题点 (<= 3) / 建议先做的检查 (<= 3), plus one closing sentence pointing to an
+    experienced server administrator or developer.
+  - Wording avoids "服主" (no audience restriction).
+  - Healthy reports still get 3-5 sentences; problems get <= ~800 characters.
+- `LEGACY_REPLY_DIGESTS` gains the hash of the unreleased §10 default, so a config saved from a branch build
+  follows the new default.
+
+**Tests (+3, 99 total):**
+- `test_platform_brand_is_reported`.
+- `test_wait_time_counts_outermost_wait_frames` replaces the split test. It covers a nested
+  `Object.wait` -> park counted once.
+- `test_wait_kind_follows_the_tick_budget` replaces the unclassified-wait test. It covers both boundaries,
+  the TPS-dip case and missing MSPT.
+- `test_built_in_rules_cover_plugin_servers` checks that the prompt files mention plugin servers and no longer
+  mention the removed fields.
+- `test_oversized_report_message_explains_the_remedy`.
+- `test_shipped_prompt_files_agree` now checks the new section names and the pointer sentence.
+
+**Not done (maintainer decision):**
+- No category breakdown, and no new commands or settings.
+- Leaf-size reports are still refused rather than partially analysed.
+- None of these prompts has been evaluated against a live model yet; `tools/dump_prompt.py` prints what
+  would be sent.

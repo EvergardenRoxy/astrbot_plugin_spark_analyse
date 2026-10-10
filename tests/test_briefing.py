@@ -20,11 +20,11 @@ LEGACY_DEFAULT_REPLY = '''你面向QQ群里的Minecraft服主回复，不是在�
 '''
 
 
-def overview(tps=20.0, median=11.6, peak=30.0, players=None, chunks=None, idle=0.0, other=0.0):
+def overview(tps=20.0, median=11.6, peak=30.0, players=None, chunks=None, wait=0.0):
     profile = Profile(sample().SerializeToString())
     result = profile.overview()
     result['evidence_pack'] = profile.evidence_pack()
-    result['evidence_pack']['threads'][0].update(denominator_ms=1000.0, idle_between_ticks_ms=idle, other_wait_ms=other)
+    result['evidence_pack']['threads'][0].update(denominator_ms=1000.0, wait_ms=wait)
     result['health'].update(tps_1m=tps, mspt_median=median, mspt_max=peak)
     result['window_health'] = [{'window': 10, 'players': players, 'chunks': chunks, 'entities': None}]
     return result
@@ -47,19 +47,25 @@ class TriageTests(unittest.TestCase):
                 self.assertIs(briefing.triage(overview(20.0, median, peak))['spikes'], expected)
 
     def test_signals_and_summary(self):
-        signals = briefing.triage(overview(20.45, 11.6, 1806.36, players=3, chunks=7193, idle=604.0))
+        signals = briefing.triage(overview(20.45, 11.6, 1806.36, players=3, chunks=7193, wait=604.0))
         self.assertEqual((signals['load'], signals['spikes']), ('none', True))
         self.assertEqual(signals['spike_ratio'], 155.7)
-        self.assertEqual(signals['idle_between_ticks_pct'], 60.4)
+        self.assertEqual((signals['wait_pct'], signals['wait_kind']), (60.4, 'between_ticks'))
         self.assertEqual(signals['chunks_per_player'], 2397.7)
-        for phrase in ('未见持续过载', '偶发尖峰', '1806', '60.4%', '7193'):
+        for phrase in ('未见持续过载', '偶发尖峰', '1806', '60.4%', '空闲', '7193'):
             self.assertIn(phrase, signals['summary'])
 
-    def test_unclassified_waiting_is_not_called_idle(self):
-        # On obfuscated (Forge 1.20.1) names, between-tick idle cannot be told apart from stalls.
-        signals = briefing.triage(overview(other=600.0))
-        self.assertEqual(signals['idle_between_ticks_pct'], 0.0)
-        self.assertIn('无法区分', signals['summary'])
+    def test_wait_kind_follows_the_tick_budget(self):
+        # A tick has a 50 ms budget. When the median tick ends well inside it, the thread waits for the next tick
+        # (spare capacity); once the median exceeds it there is no time between ticks, so waits are inside ticks.
+        # Only MSPT decides; TPS can dip from spikes alone (a Folia-like report: TPS 19.0, median 7.2 ms).
+        cases = [((19.0, 7.2), 'between_ticks'), ((20.0, 39.9), 'between_ticks'), ((20.0, 40.0), 'unknown'),
+                 ((19.0, 49.9), 'unknown'), ((19.0, 50.0), 'in_tick'), ((13.1, 54.7), 'in_tick'), ((20.0, None), 'unknown')]
+        for (tps, median), expected in cases:
+            with self.subTest(tps=tps, median=median):
+                self.assertEqual(briefing.triage(overview(tps, median, wait=500.0))['wait_kind'], expected)
+        self.assertIn('tick 内', briefing.triage(overview(13.1, 54.7, wait=747.0))['summary'])
+        self.assertIn('无法判断', briefing.triage(overview(20.0, 45.0, wait=300.0))['summary'])
 
     def test_no_players_gives_no_ratio(self):
         self.assertIsNone(briefing.triage(overview(players=0, chunks=500))['chunks_per_player'])
@@ -116,9 +122,20 @@ class PromptTests(unittest.TestCase):
         reply = (ROOT/'reply_prompt.txt').read_text(encoding='utf-8')
         self.assertEqual(schema['analysis_prompt']['default'], reply)
         self.assertFalse(briefing.is_legacy_reply(reply))
-        # Maintainer decision: no platform or audience restriction in the default reply prompt.
+        # Maintainer decisions: no platform or audience restriction; fixed sections; point to experienced people.
         for word in ('QQ', '服主', '群'):
             self.assertNotIn(word, reply)
+        for section in ('现状', '疑似问题点', '建议先做的检查', '有经验'):
+            self.assertIn(section, reply)
+
+    def test_built_in_rules_cover_plugin_servers(self):
+        policy = (ROOT/'analysis_policy.md').read_text(encoding='utf-8')
+        guide = (ROOT/'diagnosis_guide.md').read_text(encoding='utf-8')
+        for word in ('Paper', 'Folia', '插件'):
+            self.assertIn(word, policy)
+        # Wait interpretation comes from triage, not from method names that only some platforms use.
+        for text in (policy, guide):
+            self.assertNotIn('idle_between_ticks', text)
 
     def test_prompt_files_are_packaged(self):
         main = (ROOT/'main.py').read_text(encoding='utf-8')

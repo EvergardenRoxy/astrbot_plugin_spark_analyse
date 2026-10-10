@@ -186,7 +186,13 @@ class CoreTests(unittest.TestCase):
         # Spark writes -1 when it could not count; that is unknown, not a count.
         self.assertEqual((row['players'], row['entities'], row['tile_entities'], row['chunks']), (3, 316, None, 7193))
 
-    def test_wait_time_is_split_into_idle_and_other(self):
+    def test_platform_brand_is_reported(self):
+        d = sample()
+        d.metadata.platform_metadata.brand = 'Folia'
+        self.assertEqual(Profile(d.SerializeToString()).overview()['platform']['brand'], 'Folia')
+        self.assertEqual(Profile(sample().SerializeToString()).overview()['platform']['brand'], '')
+
+    def test_wait_time_counts_outermost_wait_frames(self):
         d = sample()
         del d.threads[:]
         t = d.threads.add(name='Server thread', times=[100, 100], children_refs=[0, 3])
@@ -194,11 +200,14 @@ class CoreTests(unittest.TestCase):
         t.children.add(class_name='net.minecraft.server.MinecraftServer', method_name='waitUntilNextTick', times=[60, 60], children_refs=[2])
         t.children.add(class_name='jdk.internal.misc.Unsafe', method_name='park', times=[60, 60])
         t.children.add(class_name='net.minecraft.server.MinecraftServer', method_name='tickServer', times=[40, 40], children_refs=[4, 5])
-        t.children.add(class_name='jdk.internal.misc.Unsafe', method_name='park', times=[10, 10])
+        t.children.add(class_name='java.lang.Object', method_name='wait', times=[10, 10], children_refs=[6])
         t.children.add(class_name='net.minecraft.world.level.Level', method_name='tickBlockEntities', times=[30, 30])
+        t.children.add(class_name='jdk.internal.misc.Unsafe', method_name='park', times=[10, 10])
         thread = Profile(d.SerializeToString()).evidence_pack()['threads'][0]
-        # Parking between ticks is spare capacity; parking inside a tick is a stall.
-        self.assertEqual((thread['idle_between_ticks_ms'], thread['other_wait_ms']), (120, 20))
+        # Every wait counts once at its outermost wait frame; method names decide nothing else, so the result is
+        # the same on obfuscated (Forge 1.20.1) or non-vanilla (Folia) call trees.
+        self.assertEqual(thread['wait_ms'], 140)
+        self.assertNotIn('idle_between_ticks_ms', thread)
 
     def test_runtime_jvm_and_heuristic_identity(self):
         d = sample()

@@ -26,10 +26,6 @@ def present_count(message, name):
 WAIT_FRAMES = frozenset({'jdk.internal.misc.Unsafe.park', 'sun.misc.Unsafe.park', 'java.lang.Thread.sleep',
                          'java.lang.Thread.sleep0', 'java.lang.Thread.sleepNanos0', 'java.lang.Object.wait',
                          'java.lang.Object.wait0'})
-# The server loop waiting for the next tick. Only matches readable (Mojang) method names; on older Forge
-# (e.g. 1.20.1) runtime method names are SRG ids, so such waits count as "other".
-TICK_IDLE_FRAMES = frozenset({'net.minecraft.server.MinecraftServer.waitUntilNextTick',
-                              'net.minecraft.server.MinecraftServer.waitForTasks'})
 PERFORMANCE_GAME_RULES = ('randomTickSpeed', 'doMobSpawning', 'maxEntityCramming', 'spawnChunkRadius')
 
 
@@ -50,7 +46,7 @@ class Profile:
         for t in self.data.threads:
             count += len(t.children)
             if count > max_nodes:
-                raise ProfileError('调用节点超过限额')
+                raise ProfileError('调用节点超过限额：报告的调用树超过 100 万个节点，通常是采样时间太长。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
             parents = [-2] * len(t.children)
             for i, n in [(-1, t), *enumerate(t.children)]:
                 if len(n.times) != len(self.windows) or any(not math.isfinite(x) or x < 0 for x in n.times):
@@ -148,6 +144,7 @@ class Profile:
                 'runtime': self.runtime_metadata(),
                 'platform': {'type': p.type, 'name': p.name[:240], 'version': p.version[:240],
                              'minecraft': p.minecraft_version[:120], 'spark': p.spark_version[:120],
+                             'brand': p.brand[:120],
                              'data_version': p.spark_data_version},
                 'sampling': {'mode': 'execution', 'engine': m.sampler_engine,
                              'interval_us': m.interval, 'start_ms': m.start_time,
@@ -174,7 +171,8 @@ class Profile:
                                   for w, s in sorted(self.data.time_window_statistics.items())][:120],
                 'world': self.world_statistics(),
                 'platform_truncated': any(len(value) > limit for value, limit in (
-                     (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120))),
+                     (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120),
+                     (p.brand, 120))),
                  'limitations': ['scalar absent/zero reported as null', 'no automatic obfuscation mapping',
                                 'class source only; not mod causality', 'thread share is not CPU share']}
 
@@ -205,29 +203,26 @@ class Profile:
                 'changed_game_rules': rules}
 
     def waiting(self, thread):
-        """Sampled ms parked between ticks (spare capacity) and parked elsewhere (stalls or unclassified)."""
+        """Sampled ms the thread spent parked. Whether that is spare time between ticks or a stall inside a tick
+        is judged from MSPT (briefing.triage), not from method names, which differ across platforms and versions."""
         t = self.data.threads[thread]
         parents = self.parents[thread]
-        state = [None] * len(t.children)
-        idle = other = 0.0
+        inside = [None] * len(t.children)
+        total = 0.0
         for start in range(len(t.children)):
             chain, i = [], start
-            while i != -1 and state[i] is None:
+            while i != -1 and inside[i] is None:
                 chain.append(i)
                 i = parents[i]
-            inside_wait, inside_idle = state[i] if i != -1 else (False, False)
+            waiting = inside[i] if i != -1 else False
             for j in reversed(chain):
                 n = t.children[j]
-                name = n.class_name+'.'+n.method_name
-                if name in WAIT_FRAMES and not inside_wait:
-                    if inside_idle:
-                        idle += sum(n.times)
-                    else:
-                        other += sum(n.times)
-                inside_wait = inside_wait or name in WAIT_FRAMES
-                inside_idle = inside_idle or name in TICK_IDLE_FRAMES
-                state[j] = (inside_wait, inside_idle)
-        return idle, other
+                is_wait = n.class_name+'.'+n.method_name in WAIT_FRAMES
+                if is_wait and not waiting:
+                    total += sum(n.times)
+                waiting = waiting or is_wait
+                inside[j] = waiting
+        return total
 
     def evidence_pack(self):
         """Bounded representative self hotspots; never sum inclusive ancestors."""
@@ -252,9 +247,8 @@ class Profile:
                 r['path_omitted_frames'] = max(0, len(ids)-8)
             covered = sum(r['self_ms'] for r in hotspots)
             total = result['denominator_ms']
-            idle, other = self.waiting(ti)
             threads.append({'thread': ti, 'name': t.name[:120], 'window': None,
-                            'denominator_ms': total, 'idle_between_ticks_ms': idle, 'other_wait_ms': other,
+                            'denominator_ms': total, 'wait_ms': self.waiting(ti),
                             'selected_self_ms': covered,
                             'selected_self_coverage_pct': 100*covered/total if total else None,
                             'hotspots': hotspots, 'remaining_sampled_ms': max(0, total-covered)})
