@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
+import shutil
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -24,6 +25,10 @@ class SparkPlugin(Star):
         super().__init__(context)
         self.config = config
         self.root = StarTools.get_data_dir('astrbot_plugin_spark')
+        # One session runs at a time and none exists yet, so any spark-* directory was left by a
+        # crashed host. Removing it also makes an orphaned worker exit.
+        for stale in self.root.glob('spark-*'):
+            shutil.rmtree(stale, ignore_errors=True)
         self.cache = ProfileCache(self.root/'profiles.sqlite3', config.get('profile_cache_hours', 72))
         self.background_tasks = set()
         self.history = History(self.root/'history.sqlite3', bool(config.get('history_enabled', False)))
@@ -264,4 +269,7 @@ class SparkPlugin(Star):
         if remaining:
             logger.warning('Spark terminate: %s tasks did not stop within 5s', len(remaining))
         for session in list(self.sessions):
-            await session.close()
+            try:
+                await session.close()
+            except Exception as exc:
+                logger.warning('Spark terminate: session close failed: %s', type(exc).__name__)

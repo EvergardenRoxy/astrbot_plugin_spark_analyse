@@ -259,6 +259,30 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(*list(plugin.background_tasks))
         self.assertIn('后台结果', sent)
 
+    async def test_startup_sweeps_stale_session_dirs(self):
+        # A crashed host leaves spark-* directories holding the full decoded report.
+        stale = Path(self.temp.name)/'spark-stale'
+        stale.mkdir()
+        (stale/'profile.bin').write_bytes(b'left behind by a crashed host')
+        keep = Path(self.temp.name)/'profiles.sqlite3'
+        keep.write_bytes(b'not a session dir')
+        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        self.assertFalse(stale.exists())
+        self.assertTrue(keep.exists())
+
+    async def test_terminate_closes_every_session(self):
+        attempts = []
+        class Session:
+            def __init__(self, broken): self.broken = broken
+            async def close(self):
+                attempts.append(self)
+                if self.broken: raise OSError('busy')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        plugin.sessions.update({Session(True), Session(False), Session(True)})
+        await plugin.terminate()
+        # Set order is arbitrary, so require every close attempt rather than a specific survivor.
+        self.assertEqual(len(attempts), 3)
+
     async def test_tool_fast_failure_does_not_stop_main_event(self):
         # The tool shares the main agent's event; stopping it aborts the main model's reply.
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
