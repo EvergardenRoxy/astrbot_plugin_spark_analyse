@@ -147,7 +147,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                     break
                 delivered.append(result)
         self.assertTrue(called)
-        self.assertEqual(delivered, ['已收到Spark报告，开始分析流程。', '最终分析'])
+        self.assertEqual(delivered, ['已收到Spark报告，开始分析流程。', '最终分析\n（未进行历史对比：未开启“保存分析历史”。）'])
         self.assertTrue(event.stopped)
         self.assertTrue(any('model start' in item[0] for item in self.logs))
 
@@ -400,7 +400,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.module, 'ReportSession', FakeSession), \
              patch.object(plugin.history, 'save', side_effect=sqlite3.OperationalError('database is locked')):
             result = [r async for r in plugin.spark_command(Event())]
-        self.assertEqual(result[-1], '模型结论')
+        self.assertTrue(result[-1].startswith('模型结论'))
+        self.assertNotIn('已保存本次结果', result[-1])
 
     async def test_history_lookup_failure_skips_comparison(self):
         captured = {}
@@ -412,6 +413,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
              patch.object(plugin.history, 'list', side_effect=sqlite3.DatabaseError('file is not a database')):
             result = [r async for r in plugin.spark_command(Event())]
         self.assertTrue(result[-1].startswith('模型结论'))
+        self.assertIn('未进行历史对比：历史记录读取失败', result[-1])
         self.assertIsNone(self.module.json.loads(captured['prompt'])['history_comparison'])
 
     async def test_legacy_default_reply_prompt_is_replaced(self):
@@ -525,5 +527,90 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         finally:
             stop.set()
             await asyncio.sleep(0.1)
+
+    async def test_stuck_model_task_blocks_fallback(self):
+        # A model task that survives cancellation could still send a request, so no fallback may start.
+        calls = []
+        async def agent(**kwargs):
+            calls.append(kwargs['chat_provider_id'])
+            raise RuntimeError('provider error')
+        stuck = asyncio.get_running_loop().create_future()
+        async def leave_stuck(tasks): return {stuck}
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {
+            'analysis_provider_id':'first', 'fallback_providers':[{'provider_id':'second'}]})
+        try:
+            with patch.object(self.module, 'ReportSession', FakeSession), \
+                 patch.object(self.module, 'cancel_bounded', leave_stuck):
+                results = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001')]
+            self.assertEqual(calls, ['first'])
+            self.assertIn('RuntimeError', results[-1])
+            self.assertIn(stuck, plugin.background_tasks)
+        finally:
+            stuck.cancel()
+
+    def test_compare_keyword_is_a_whole_word(self):
+        for text in ('compare', 'COMPARE 一下', '调整后compare', 'server=a compare。', 'compare=上次'):
+            with self.subTest(text=text):
+                self.assertTrue(self.module.COMPARE.search(text))
+        for text in ('comparison', 'compared', 'https://spark.lucko.me/xCompareYz1'):
+            with self.subTest(text=text):
+                self.assertFalse(self.module.COMPARE.search(text))
+
+    async def test_compare_ignores_derived_problem_tag(self):
+        # Without problem=, the tag is derived from the wording, so "掉TPS" and a JVM question get different tags.
+        prompts = []
+        async def agent(**kwargs):
+            prompts.append(self.module.json.loads(kwargs['prompt']))
+            return types.SimpleNamespace(completion_text='模型结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        link = 'https://spark.lucko.me/SyntheticReport001'
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.handle(Event(), f'{link} server=test 掉TPS')]
+            result = [r async for r in plugin.handle(Event(), f'{link} server=test JVM 调整后 compare')]
+            self.assertIsNotNone(prompts[-1]['history_comparison'])
+            self.assertIsNone(prompts[-1]['history_comparison_unavailable'])
+            self.assertNotIn('未进行历史对比', result[-1])
+            # A typed problem= tag still has to match exactly.
+            result = [r async for r in plugin.handle(Event(), f'{link} server=test problem=其他 compare')]
+        self.assertIsNone(prompts[-1]['history_comparison'])
+        self.assertIn('未进行历史对比：没有找到可对比的记录', result[-1])
+
+    async def test_skipped_comparison_is_explained(self):
+        prompts = []
+        async def agent(**kwargs):
+            prompts.append(self.module.json.loads(kwargs['prompt']))
+            return types.SimpleNamespace(completion_text='模型结论')
+        link = 'https://spark.lucko.me/SyntheticReport001'
+        cases = [({}, f'{link} server=test compare', '未开启“保存分析历史”'),
+                 ({'history_enabled': True}, f'{link} server=test compare', '没有找到可对比的记录'),
+                 # The synthetic report has no OS or CPU data, so no server tag can be derived.
+                 ({'history_enabled': True}, f'{link} compare', '请加上 server=')]
+        for config, text, reason in cases:
+            with self.subTest(reason=reason):
+                plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', **config})
+                with patch.object(self.module, 'ReportSession', FakeSession):
+                    result = [r async for r in plugin.handle(Event(), text)]
+                self.assertTrue(result[-1].startswith('模型结论'))
+                self.assertIn('未进行历史对比：', result[-1])
+                self.assertIn(reason, result[-1])
+                self.assertIn(reason, prompts[-1]['history_comparison_unavailable'])
+        # No compare keyword, no note.
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            result = [r async for r in plugin.handle(Event(), f'{link} server=test comparison of last week')]
+        self.assertEqual(result[-1], '模型结论')
+        self.assertIsNone(prompts[-1]['history_comparison_unavailable'])
+
+    async def test_auto_analyze_keywords(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='模型结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        for words, triggers in (('need analysis', True), ('please analyse', True), ('Analyze this', True),
+                                ('帮我分析', True), ('analytics link', False), ('看看这个', False)):
+            with self.subTest(words=words):
+                event = Event()
+                event.message_str = f'{words} https://spark.lucko.me/SyntheticReport001'
+                with patch.object(self.module, 'ReportSession', FakeSession):
+                    results = [r async for r in plugin.auto_analyze(event)]
+                self.assertEqual(bool(results), triggers)
 
 if __name__ == '__main__': unittest.main()
