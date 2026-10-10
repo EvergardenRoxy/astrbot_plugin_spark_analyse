@@ -5,7 +5,7 @@
 > [!IMPORTANT]
 > **AI 制作声明：Spark 报告分析采用生成式 AI 参与架构设计、编码、文档与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
 >
-> 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与更新日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.5 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及更新日志与交接文档（`handoff.md`）的编写。
+> 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与更新日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.6 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及更新日志与交接文档（`handoff.md`）的编写。
 
 # 作者注
 
@@ -74,13 +74,15 @@ https://spark.lucko.me/<报告ID>
 /spark https://spark.lucko.me/报告ID server=生存服 problem=新区卡顿
 ```
 
-再次采样后，添加 `compare` 比较最近一次记录：
+再次采样后，添加 `compare`（单独的一个词）比较最近一次记录：
 
 ```text
 /spark https://spark.lucko.me/新报告ID server=生存服 problem=新区卡顿 compare 预生成地图后再次采样
 ```
 
 不填写标签时，插件根据系统与 CPU 信息生成大致的服务器标签，并为问题分类。同配置的机器可能具有相同标签，需要准确区分时请自行填写 `server=` 和 `problem=`。
+
+对比时，没写 `problem=` 就只按服务器标签找最近一次记录，不受问题描述用词的影响；写了 `problem=` 则只与同一问题标签的记录对比。没能对比时（例如没有开启“保存分析历史”、没有找到记录，或报告缺少系统信息而需要填写 `server=`），结论末尾会说明原因。
 
 历史按会话和发送者分别管理，保留 30 天。`/spark forget` 清除你在当前会话的分析历史。关闭“保存分析历史”后不再写入新记录；已有记录仍可用 `/spark forget` 清除，超过 30 天的记录在插件加载时删除。
 

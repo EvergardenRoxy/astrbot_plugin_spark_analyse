@@ -1,11 +1,36 @@
 [![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
 
 > [!IMPORTANT]
-> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.5 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
+> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.6 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
 
 # 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+## 1.0.6 - 2026-10-11
+
+> 本版本由 **Claude Opus 5.5**（通过 **Claude Code**）依据维护者确认的第三轮审查意见完成修改。实现细节、依据与验证方式见 [handoff.md](handoff.md)。
+
+### 修复
+
+- **`compare` 没能对比时会说明原因**：以前没有开启“保存分析历史”、找不到记录或无法识别服务器时，`compare` 会静默失效。现在结论末尾会说明原因，分析模型也会知道本次没有对比，不会编造对比结论。
+- **对比不再受问题描述用词的影响**：没写 `problem=` 时，只按服务器标签找最近一次记录。以前前后两次的描述用词不同（例如“掉TPS”和“调整 JVM 后”），会被分到不同的问题类别而找不到记录。写了 `problem=` 的仍只与同一问题标签对比。
+- **`compare` 只在作为单独的词时生效**：“comparison”“compared”等词不再误触发对比。
+- **自动识别关键词补上 “analysis”**：以前只识别 “analyse” 和 “analyze”。
+
+### 变更
+
+- 整理分析流程的代码结构，便于审查和维护；行为不变（对比相关的修改除外）。
+- 版本号升至 1.0.6。
+- 开发相关：新增 `checklist.md`，用通俗的话说明各版本做了什么、为什么、怎样核对；`handoff.md` 继续作为英文技术记录。
+
+### 测试
+
+- 单元测试由 99 项增至 104 项。
+
+### 未改动
+
+- 依赖（`requirements.txt`）和配置项未改动；下载与解析限额未放宽。
 
 ## 1.0.5 - 2026-10-11
 

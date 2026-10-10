@@ -143,8 +143,10 @@ def model_overview(overview, question):
     return {'triage': triage(overview), **view}
 
 
-def user_payload(question, overview, comparison=None, previous=None):
+def user_payload(question, overview, comparison=None, previous=None, comparison_unavailable=None):
     return json.dumps({'user_observation': question[:2000], 'overview': model_overview(overview, question),
                        'history_comparison': comparison,
+                       # Why a requested comparison was not made; the plugin also tells the user.
+                       'history_comparison_unavailable': comparison_unavailable,
                        'previous_review_untrusted': previous[:6000] if comparison and previous else None},
                       ensure_ascii=False)
