@@ -5,9 +5,23 @@ import sys
 import time
 from pathlib import Path
 
-# Executed as a file; do not depend on the plugin's dynamically assigned module name.
-# Replace (not prepend) the script directory so spark_core/profile.py cannot shadow stdlib `profile`.
-sys.path[0] = str(Path(__file__).resolve().parents[1])
+
+def import_path(entries, here):
+    """sys.path with the plugin root first, so `spark_core` imports without the plugin's dynamic package name.
+
+    Python normally puts the script directory first: replace it so spark_core/profile.py cannot shadow stdlib
+    `profile`. Under PYTHONSAFEPATH, -P or a ._pth file there is no script directory and entry 0 is a
+    PYTHONPATH entry or the stdlib zip, so every entry is kept.
+    """
+    root = os.path.dirname(here)
+    if entries and os.path.realpath(entries[0] or os.curdir) == here:
+        return [root, *entries[1:]]
+    return [root, *entries]
+
+
+# Only when run as the worker script; importing this module (tests) must not touch the caller's sys.path.
+if __name__ == '__main__':
+    sys.path[:] = import_path(sys.path, os.path.dirname(os.path.realpath(__file__)))
 from spark_core.profile import Profile, ProfileError
 
 

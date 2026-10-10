@@ -13,7 +13,7 @@ CHANGELOG for that).
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.4 (§9). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 93 (Unreleased, §10), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 96 (Unreleased, §10-§11), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -201,9 +201,10 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
   `THIRD_PARTY.md` and `analysis_policy.md` are).
 - `test_version_is_consistent`: `metadata.yaml` (leading `v` stripped) == the `@register` literal == the
   first `## X.Y.Z - ` heading in CHANGELOG. `## Unreleased` does not match that pattern by design.
-- `worker.py`: `sys.path[0] = <plugin root>` replaces the script dir, so `spark_core/profile.py` no longer
-  shadows stdlib `profile`. Verified by simulating script-mode `sys.path` (the old setup imported the plugin
-  file; the new one resolves stdlib).
+- `worker.py`: the plugin root goes first on `sys.path` and the script dir is dropped, so `spark_core/profile.py`
+  no longer shadows stdlib `profile`. Verified by simulating script-mode `sys.path` (the old setup imported the
+  plugin file; the new one resolves stdlib). Superseded by `import_path()`, which only replaces entry 0 when it is
+  the script dir (§11).
 - `.github/workflows/tests.yml`: Python 3.12/3.13 matrix, `permissions: contents: read`, runs on every push and PR.
 
 ## 3. Test map
@@ -218,6 +219,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | X1 | `test_close_removes_directory_when_worker_wait_fails`, `test_terminate_closes_every_session` |
 | F6 | `test_link_boundaries` |
 | F3 | `test_history_retention_while_disabled`, `test_history_retention_and_forget_while_disabled`, `test_corrupt_history_database_does_not_block_loading` |
+| Review item 1 (§11) | `test_script_directory_is_replaced`, `test_safe_path_entries_are_kept`, `test_worker_runs_with_dependencies_only_on_pythonpath` |
 | Review item 2 (§8) | `test_locked_history_does_not_stall_loading`, `test_forget_reports_unreadable_history`, `test_forget_reports_busy_history` |
 | X3 / S1 | `test_compare_tolerates_older_overview_shape`, `test_history_lookup_failure_skips_comparison`, `test_history_save_failure_keeps_result` |
 | F8 | `test_version_is_consistent` |
@@ -243,7 +245,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
 - Merge `v1.0.4` into `main`: no PR was created by the agent; that is the maintainer's call.
-- Review round 2 item 1 (`worker.py` `sys.path` handling under `PYTHONSAFEPATH`): proposed in §8, not implemented.
+- AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
+  two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Not started.
 - Prompt rewrite (§10) has not been evaluated against a live model yet; use `tools/dump_prompt.py`.
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
@@ -309,7 +312,7 @@ started, so this round ships as 1.0.4 (§9).
 - **Item 3, CHANGELOG (implemented):** the 1.0.3 section was cut from ~7.8 KB to ~2.8 KB of user-facing
   bullets. Nothing that was dropped is lost: AstrBot internals, version bisect, hot-reload note and per-test
   lists all live in §2-§3 of this file.
-- **Item 1, `worker.py` `sys.path[0] = root` is unconditional (proposed):** with `PYTHONSAFEPATH=1` (or `-I`),
+- **Item 1, `worker.py` `sys.path[0] = root` is unconditional (implemented later, §11):** with `PYTHONSAFEPATH=1` (or `-I`),
   `sys.path[0]` is not the script dir but a `PYTHONPATH` entry or the stdlib zip, and gets overwritten.
 - **Item 2, `/spark forget` error guard and sqlite timeouts (implemented):**
   - **Reproduced first:** `/spark forget` on a corrupt file raised an uncaught `DatabaseError`. With another
@@ -335,7 +338,7 @@ started, so this round ships as 1.0.4 (§9).
     - `str(exc)` is only used to classify, never shown in chat (the path-leak rule still holds).
   - The report cache DB needed no change: it does not touch the DB at init, and it only runs in worker
     threads (30 s timeout).
-  - **Proposal for item 1 (not implemented):** replace `sys.path[0]` only when it resolves to the script
+  - **Proposal for item 1 (implemented in §11):** replace `sys.path[0]` only when it resolves to the script
     directory, otherwise `insert(0, root)`. Reproduced in a scratch copy: under `PYTHONSAFEPATH=1` the
     current code overwrote a `PYTHONPATH` entry; the conditional version kept it, and resolved stdlib
     `profile` in both modes. Suggested tests: put the decision in a function that is only called when the
@@ -448,3 +451,31 @@ unclassified waiting, vm_args trimming and the JVM-question exception, payload r
 `test_core.py` covers world statistics, window counts and the wait split. `test_plugin.py` covers legacy
 replacement (saved and unsaved), keeping custom text, the served-model log, triage-first payload, tool
 parameter descriptions and the new history note. Each new test failed on the code before its change.
+
+## 11. Review item 1: worker `sys.path` under safe-path modes (Unreleased)
+
+- **Re-verified before implementing:** the real worker was run in a package-free venv, so protobuf was reachable
+  only through `PYTHONPATH`.
+  - Normal start: the current code worked.
+  - With `PYTHONSAFEPATH=1`: it died with `ModuleNotFoundError: No module named 'google'` and wrote no
+    `ready.json`. Users see "解析worker异常退出".
+  - The conditional version worked in both modes.
+  - (A first attempt used the system Python, which turned out to have protobuf installed, so it proved
+    nothing and was discarded.)
+- **Fix:** `import_path(entries, here)` replaces entry 0 only when its realpath is the script directory;
+  otherwise it prepends the plugin root and keeps every entry. It is applied only under
+  `if __name__ == '__main__'`, so importing `spark_core.worker` (in tests) leaves the caller's `sys.path`
+  alone; before this change, importing the module rewrote it.
+- **Tests:** two pure tests for the two branches, plus `test_worker_runs_with_dependencies_only_on_pythonpath`,
+  which runs the worker as `python -S -P` with dependencies only on `PYTHONPATH`. That reproduces the failure
+  in CI without any special environment, and failed on the old code.
+- **Who could hit it:** AstrBot started with `PYTHONSAFEPATH` set and dependencies on `PYTHONPATH`, or a Python
+  whose `._pth` file puts the stdlib zip first (Windows embeddable; inferred, not tested). Standard pip/uv/Docker
+  installs were never affected.
+- **Out of scope (maintainer decision): AstrBot desktop client.** Read from AstrBot 4.28.2, not tested:
+  - With `ASTRBOT_DESKTOP_CLIENT=1`, plugin requirements are installed with `pip --target data/site-packages`
+    and added to `sys.path` only inside the AstrBot process (`pip_installer.py`), so the worker subprocess
+    would not see protobuf.
+  - AstrBot also handles `sys.frozen` (`process_restart.py`). If the desktop build is frozen,
+    `sys.executable` is the app itself and the worker cannot start.
+  - Neither is addressed by this fix.
