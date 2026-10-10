@@ -2,6 +2,7 @@
 import asyncio
 import importlib
 import importlib.util
+import sqlite3
 import sys
 import tempfile
 import types
@@ -282,6 +283,53 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await plugin.terminate()
         # Set order is arbitrary, so require every close attempt rather than a specific survivor.
         self.assertEqual(len(attempts), 3)
+
+    async def test_history_retention_and_forget_while_disabled(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='ok')
+        path = Path(self.temp.name)/'history.sqlite3'
+        enabled = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            for _ in range(2):
+                [r async for r in enabled.spark_command(Event())]
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE reviews SET created=0 WHERE rowid=1")
+        db.close()
+        disabled = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        with sqlite3.connect(path) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 1)
+        db.close()
+        event = Event()
+        event.message_str = '/spark forget'
+        result = [r async for r in disabled.spark_command(event)]
+        self.assertIn('1条', result[0])
+        with sqlite3.connect(path) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 0)
+        db.close()
+
+    async def test_corrupt_history_database_does_not_block_loading(self):
+        (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
+        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_history_save_failure_keeps_result(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='模型结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', FakeSession), \
+             patch.object(plugin.history, 'save', side_effect=sqlite3.OperationalError('database is locked')):
+            result = [r async for r in plugin.spark_command(Event())]
+        self.assertEqual(result[-1], '模型结论')
+
+    async def test_history_lookup_failure_skips_comparison(self):
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='模型结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', FakeSession), \
+             patch.object(plugin.history, 'list', side_effect=sqlite3.DatabaseError('file is not a database')):
+            result = [r async for r in plugin.spark_command(Event())]
+        self.assertTrue(result[-1].startswith('模型结论'))
+        self.assertIsNone(self.module.json.loads(captured['prompt'])['history_comparison'])
 
     async def test_tool_fast_failure_does_not_stop_main_event(self):
         # The tool shares the main agent's event; stopping it aborts the main model's reply.

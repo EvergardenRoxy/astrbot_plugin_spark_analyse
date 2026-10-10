@@ -87,7 +87,7 @@
     "type": "list",
     "description": "允许使用的用户",
     "default": [],
-    "hint": "每项填写一个用户ID，例如QQ号。仅在“管理员和用户名单”模式下生效。"
+    "hint": "每项填写一个用户ID，例如QQ号。仅在 admin_and_whitelist（管理员和用户名单）模式下生效。"
   },
   "allowed_origins": {
     "type": "list",
@@ -99,7 +99,7 @@
     "type": "bool",
     "description": "保存分析历史",
     "default": false,
-    "hint": "开启后保存分析结果供以后比较，保留30天。关闭不会删除已有历史，也不影响报告缓存。"
+    "hint": "开启后保存分析结果供以后比较，保留30天。关闭后不再写入新记录；已有记录仍可用 /spark forget 清除，超过30天的记录在插件加载时删除。不影响报告缓存。"
   },
   "analysis_prompt": {
     "type": "text",

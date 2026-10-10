@@ -6,7 +6,7 @@ from unittest.mock import patch
 from spark_core.profile import Profile, ProfileError
 from spark_core.proto.spark_sampler_pb2 import SamplerData
 from spark_core.history import History, compare
-from spark_core.transport import report_id
+from spark_core.transport import LINK, report_id
 
 
 def sample():
@@ -57,6 +57,38 @@ class CoreTests(unittest.TestCase):
         for url in ('http://spark.lucko.me/SyntheticReport001', 'https://localhost/foobar', 'https://spark.lucko.me/foobar?url=http://localhost', 'https://spark.lucko.me@localhost/foobar'):
             with self.assertRaises(ProfileError): report_id(url)
 
+    def test_link_boundaries(self):
+        # Sentence punctuation and one trailing slash end a link; path or file suffixes reject it.
+        cases = {
+            'AbCdEf1234': ['AbCdEf1234'], 'AbCdEf1234。': ['AbCdEf1234'], 'AbCdEf1234.': ['AbCdEf1234'],
+            'AbCdEf1234/': ['AbCdEf1234'], 'AbCdEf1234?x=1': ['AbCdEf1234'], 'AbCdEf1234,卡顿': ['AbCdEf1234'],
+            'AbCdEf1234/extra': [], 'AbCdEf1234.json': [], 'AbCdEf1234-': [], 'AbCdEf1234_x': [], 'abc': []}
+        for tail, expected in cases.items():
+            with self.subTest(tail=tail):
+                self.assertEqual(LINK.findall('看下 https://spark.lucko.me/'+tail), expected)
+
+    def test_history_retention_while_disabled(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)/'history.sqlite3'
+            h = History(path)
+            self.assertEqual(h.purge(), 0)
+            self.assertEqual(h.delete('a'), 0)
+            self.assertFalse(path.exists())
+            h.enabled = True
+            overview = Profile(sample().SerializeToString()).overview()
+            for owner in ('a', 'a', 'b'):
+                h.save(owner, 's', 'p', overview, 'ok')
+            with sqlite3.connect(path) as db:
+                db.execute("UPDATE reviews SET created=0 WHERE rowid=1")
+            db.close()
+            h.enabled = False
+            self.assertEqual(h.purge(), 1)
+            self.assertEqual(h.delete('a'), 1)
+            with sqlite3.connect(path) as db:
+                owners = [r[0] for r in db.execute('SELECT owner FROM reviews')]
+            db.close()
+            self.assertEqual(owners, ['b'])
+
     def test_history_off_and_isolation(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)/'history.sqlite3'
@@ -93,6 +125,13 @@ class CoreTests(unittest.TestCase):
         after = Profile(sample().SerializeToString()).overview()
         after['sampling']['interval_us'] = 1000
         self.assertFalse(compare(before, after)['comparable_sampling'])
+
+    def test_compare_tolerates_older_overview_shape(self):
+        current = Profile(sample().SerializeToString()).overview()
+        result = compare({'platform': {'name': 'NeoForge'}}, current)
+        self.assertFalse(result['comparable_sampling'])
+        self.assertIn('sampling.mode', result['different_conditions'])
+        self.assertTrue(all(v is None for v in result['health_delta'].values()))
 
     def test_evidence_pack_coverage_and_paths(self):
         p = Profile(sample().SerializeToString())

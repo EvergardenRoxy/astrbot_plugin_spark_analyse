@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import shutil
+import sqlite3
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -32,6 +33,10 @@ class SparkPlugin(Star):
         self.cache = ProfileCache(self.root/'profiles.sqlite3', config.get('profile_cache_hours', 72))
         self.background_tasks = set()
         self.history = History(self.root/'history.sqlite3', bool(config.get('history_enabled', False)))
+        try:
+            self.history.purge()
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning('Spark history purge failed: %s', type(exc).__name__)
         self.policy = Path(__file__).with_name('analysis_policy.md').read_text(encoding='utf-8')
         self.default_reply_prompt = Path(__file__).with_name('reply_prompt.txt').read_text(encoding='utf-8')
         self.active = set()
@@ -81,7 +86,7 @@ class SparkPlugin(Star):
             return
         if text == 'forget':
             count = await asyncio.to_thread(self.history.delete, self.owner(event))
-            yield event.plain_result(f'已清除当前发送者在此会话的历史记录：{count}条。关闭存储时不会打开数据库；旧库须启用后清除。')
+            yield event.plain_result(f'已清除当前发送者在此会话的历史记录：{count}条。')
             event.stop_event()
             return
         async for result in self.handle(event, text):
@@ -168,8 +173,15 @@ class SparkPlugin(Star):
                 server = server_match.group(1) if server_match else overview.get('runtime', {}).get('server_hint', {}).get('tag', '')
                 problem = problem_match.group(1) if problem_match else (
                     'JVM与GC' if re.search(r'JVM|GC|启动参数|堆内存', text, re.I) else '性能分析')
-                history = await asyncio.to_thread(self.history.list, owner, server, problem) if server else []
-                comparison = compare(history[0]['overview'], overview) if history and 'compare' in text.lower() else None
+                history, comparison = [], None
+                if server:
+                    # Comparison is optional context; a broken history store must not fail the analysis.
+                    try:
+                        history = await asyncio.to_thread(self.history.list, owner, server, problem)
+                        comparison = compare(history[0]['overview'], overview) if history and 'compare' in text.lower() else None
+                    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                        history, comparison = [], None
+                        logger.warning('Spark [%s] history comparison skipped: %s', trace, type(exc).__name__)
                 calls = 0
 
                 async def query(tool_event, view='hotspots', thread=0, node=-1, window=None, search='', offset=0):
@@ -234,7 +246,12 @@ class SparkPlugin(Star):
                         if remaining or attempt+1 == len(providers):
                             raise
                         yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(exc).__name__}），使用下一个模型继续尝试。')
-                history_id = await asyncio.to_thread(self.history.save, owner, server, problem, overview, result)
+                try:
+                    history_id = await asyncio.to_thread(self.history.save, owner, server, problem, overview, result)
+                except (sqlite3.Error, OSError) as exc:
+                    # The model already answered; a failed history write must not discard the result.
+                    history_id = None
+                    logger.warning('Spark [%s] history save failed: %s', trace, type(exc).__name__)
                 suffix = f'\n历史记录：{history_id}（server={server or "未标记"}，problem={problem or "未标记"}）' if history_id else ''
                 logger.info('Spark [%s] history saved=%s; sending final result', trace, bool(history_id))
                 yield event.plain_result(plain_text(result)+suffix)
