@@ -1,4 +1,8 @@
-"""Explicit network smoke test; never stores the reference profile in the repository."""
+"""Explicit network smoke test; never stores the reference profile in the repository.
+
+Run outside AstrBot with the test logger stub on the path:
+    PYTHONPATH=tests python tools/check_sample.py https://spark.lucko.me/<report-id>
+"""
 import asyncio
 import json
 import sys

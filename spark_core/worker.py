@@ -6,7 +6,8 @@ import time
 from pathlib import Path
 
 # Executed as a file; do not depend on the plugin's dynamically assigned module name.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Replace (not prepend) the script directory so spark_core/profile.py cannot shadow stdlib `profile`.
+sys.path[0] = str(Path(__file__).resolve().parents[1])
 from spark_core.profile import Profile, ProfileError
 
 

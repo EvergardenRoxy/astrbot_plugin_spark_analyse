@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,13 @@ class ReleaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(task, remaining)
         release.set()
         await task
+
+    def test_version_is_consistent(self):
+        root = Path(__file__).resolve().parents[1]
+        metadata = re.search(r'^version:\s*v?(\S+)', (root/'metadata.yaml').read_text(encoding='utf-8'), re.M).group(1)
+        registered = re.search(r"@register\(.*'([0-9][^']*)'\)", (root/'main.py').read_text(encoding='utf-8')).group(1)
+        released = re.search(r'^## ([0-9][^ ]*) - ', (root/'CHANGELOG.md').read_text(encoding='utf-8'), re.M).group(1)
+        self.assertEqual({metadata, registered, released}, {metadata})
 
     def test_oversized_runtime_is_marked(self):
         d = sample()
