@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+import sqlite3
 import sys
 import tempfile
 from astrbot.api import logger
@@ -34,10 +35,20 @@ class ReportSession:
             return json.loads(path.read_text(encoding='utf-8'))
         return await asyncio.wait_for(wait(), timeout)
 
+    async def cache_call(self, name, *args, default=None):
+        # The raw cache only saves a download; a broken cache must never fail the analysis.
+        if not self.cache:
+            return default
+        try:
+            return await asyncio.to_thread(getattr(self.cache, name), *args)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            logger.warning('Spark raw cache %s failed: %s', name, type(exc).__name__)
+            return default
+
     async def load(self, url):
         key = report_id(url)
         target = self.directory/'profile.bin'
-        hit = await asyncio.to_thread(self.cache.get, key, target) if self.cache else False
+        hit = await self.cache_call('get', key, target, default=False)
         logger.info('Spark raw cache %s; report=%s', 'hit' if hit else 'miss', key)
         if not hit:
             logger.info('Spark download start; timeout=%ss', self.download_timeout)
@@ -45,8 +56,7 @@ class ReportSession:
                 await download(url, target, timeout_seconds=self.download_timeout, proxy=self.proxy)
             except TimeoutError as exc:
                 raise LoadTimeout(f'下载阶段超时（{self.download_timeout}秒）；尚未调用分析模型；{exc}') from exc
-            if self.cache:
-                await asyncio.to_thread(self.cache.put, key, target)
+            await self.cache_call('put', key, target)
         logger.info('Spark download success; decoded_bytes=%s; parse start timeout=%ss',
                     (self.directory/'profile.bin').stat().st_size, self.parse_timeout)
         self.process = await asyncio.create_subprocess_exec(
@@ -59,9 +69,10 @@ class ReportSession:
             raise LoadTimeout(f'解析/证据包阶段超时（{self.parse_timeout}秒）；尚未调用分析模型') from exc
         logger.info('Spark parse ready; worker_pid=%s', self.process.pid)
         if 'error' in self.overview:
-            if self.cache and self.overview['error'].startswith('DecodeError:'):
-                await asyncio.to_thread(self.cache.discard, key)
-            raise ProfileError(self.overview['error'])
+            if self.overview['error'].startswith('DecodeError:'):
+                await self.cache_call('discard', key)
+            kind, _, reason = self.overview['error'].partition(': ')
+            raise ProfileError(reason or f'报告解析失败（{kind}）')
         return self.overview
 
     async def query(self, **arguments):

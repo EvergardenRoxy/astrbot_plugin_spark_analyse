@@ -35,7 +35,7 @@ class History:
         if not self.enabled or not self.path.exists():
             return []
         with self.connect() as db:
-            rows = db.execute('SELECT id, created, overview, result FROM reviews WHERE owner=? AND server=? AND (?="" OR problem=?) ORDER BY created DESC LIMIT 10',
+            rows = db.execute("SELECT id, created, overview, result FROM reviews WHERE owner=? AND server=? AND (?='' OR problem=?) ORDER BY created DESC LIMIT 10",
                               (owner, server, problem, problem)).fetchall()
         return [{'id': r[0], 'created': r[1], 'overview': json.loads(r[2]), 'result': r[3]} for r in rows]
 

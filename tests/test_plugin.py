@@ -1,5 +1,6 @@
 """SDK boundary doubles, not a claim of a running AstrBot installation."""
 import asyncio
+import importlib
 import importlib.util
 import sys
 import tempfile
@@ -171,6 +172,35 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.inflight_reports.add('SyntheticReport001')
         result = [r async for r in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001')]
         self.assertEqual(result, [])
+        self.assertFalse(plugin.active)
+
+    async def test_same_link_repeated_is_one_report(self):
+        async def agent(**kwargs):
+            return types.SimpleNamespace(completion_text='重复链接也能分析')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        link = 'https://spark.lucko.me/SyntheticReport001'
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            results = [r async for r in plugin.handle(Event(), f'帮我分析 {link} 就是 {link} 这个')]
+        self.assertEqual(results[-1], '重复链接也能分析')
+
+    async def test_different_links_are_still_rejected(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
+        text = 'https://spark.lucko.me/SyntheticReport001 https://spark.lucko.me/SyntheticReport002'
+        results = [r async for r in plugin.handle(Event(), text)]
+        self.assertEqual(len(results), 1)
+        self.assertIn('请提供一个', results[0])
+
+    async def test_report_rejection_reason_is_shown(self):
+        # Must be the class main.py imported, not the top-level test copy.
+        profile_error = importlib.import_module('spark_test_plugin.spark_core.profile').ProfileError
+        class RejectSession(FakeSession):
+            async def load(self, url): raise profile_error('报告类型不是sampler')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', RejectSession):
+            results = [r async for r in plugin.spark_command(Event())]
+        self.assertIn('报告类型不是sampler', results[-1])
+        self.assertIn('未生成成功', results[-1])
+        self.assertFalse((Path(self.temp.name)/'history.sqlite3').exists())
         self.assertFalse(plugin.active)
 
     async def test_custom_ack_and_load_timeout_no_model(self):

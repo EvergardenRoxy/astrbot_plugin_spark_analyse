@@ -1,6 +1,8 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from spark_core.profile import Profile, ProfileError
 from spark_core.proto.spark_sampler_pb2 import SamplerData
 from spark_core.history import History, compare
@@ -38,6 +40,12 @@ class CoreTests(unittest.TestCase):
             if change == 'size': d.threads[0].children[0].times.pop()
             with self.assertRaises(ProfileError): Profile(d.SerializeToString())
 
+    def test_inconsistent_report_gets_actionable_message(self):
+        d = sample()
+        d.threads[0].children[0].times[:] = [500, 500]  # child larger than its parent
+        with self.assertRaisesRegex(ProfileError, '报告内部数据不一致.*重新采样'):
+            Profile(d.SerializeToString())
+
     def test_unknown_zero(self):
         p = Profile(sample().SerializeToString())
         self.assertIsNone(p.overview()['health']['tps_1m'])
@@ -64,6 +72,21 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(h.list('a','other','p'), [])
             self.assertEqual(h.delete('b'), 0)
             self.assertEqual(h.delete('a'), 1)
+
+    @unittest.skipUnless(hasattr(sqlite3.Connection, 'setconfig'), 'needs sqlite3.Connection.setconfig (Python 3.12+)')
+    def test_history_sql_has_no_double_quoted_literal(self):
+        # SQLite built with SQLITE_DQS=0 rejects "" as a string literal.
+        real_connect = sqlite3.connect
+        def strict_connect(*args, **kwargs):
+            db = real_connect(*args, **kwargs)
+            db.setconfig(sqlite3.SQLITE_DBCONFIG_DQS_DML, False)
+            return db
+        with tempfile.TemporaryDirectory() as root:
+            h = History(Path(root)/'history.sqlite3', True)
+            h.save('a', 's', 'p', Profile(sample().SerializeToString()).overview(), 'ok')
+            with patch('spark_core.history.sqlite3.connect', strict_connect):
+                self.assertEqual(len(h.list('a', 's', 'p')), 1)
+                self.assertEqual(len(h.list('a', 's')), 1)
 
     def test_compare_gate(self):
         before = Profile(sample().SerializeToString()).overview()

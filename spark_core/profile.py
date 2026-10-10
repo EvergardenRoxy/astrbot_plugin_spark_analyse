@@ -61,7 +61,7 @@ class Profile:
                 for wi, total in enumerate(n.times):
                     children_total = sum(t.children[c].times[wi] for c in n.children_refs)
                     if children_total > total + max(0.001, total*1e-6):
-                        raise ProfileError('子调用采样超过父调用或线程根')
+                        raise ProfileError('报告内部数据不一致（子调用耗时大于父调用），无法得到可信占比，已拒绝分析以免给出错误结论；请用最新版Spark重新采样')
             self.parents.append(parents)
 
     def runtime_metadata(self):
