@@ -12,8 +12,8 @@ CHANGELOG for that).
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.4 (§9). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 96 (§10-§11) -> 99 (§12, Unreleased), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Version | 1.0.5 (§13). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`); `v1.0.4` (§9) was not yet merged when 1.0.5 was prepared. Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5` (stacked on `v1.0.4`). |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -35,9 +35,10 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `33b147c` | Review round 2 items 3 and 4: default `admin_only`, trimmed 1.0.3 CHANGELOG (§8) |
 | `8090d18` | Review round 2 item 2: `/spark forget` guard, startup purge in `initialize()` (§8) |
 | `1106402` | Release prep for 1.0.4 (§9). Branch `v1.0.4` holds the same tree as one commit on `main`. |
-| `e07adbe` | Prompt rewrite and model-input changes (§10), under `## Unreleased` |
+| `e07adbe` | Prompt rewrite and model-input changes (§10) |
 | `af5fd32` | Review item 1: worker `sys.path` under safe-path modes (§11) |
-| last commit | Reorientation: quick triage, multi-platform wait rule, oversized-report messages (§12) |
+| `b9f0466` | Reorientation: quick triage, multi-platform wait rule, oversized-report messages (§12) |
+| last commit | Release prep for 1.0.5 (§13). Branch `v1.0.5` holds the same tree as one commit on `v1.0.4`. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -200,7 +201,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 - `tools/package_plugin.py` reads `^version:` from `metadata.yaml` (regex; no PyYAML). The output name
   follows it (for example `astrbot_plugin_spark-v1.0.4.zip`). The zip uses an explicit file list:
   `handoff.md` and `CHANGELOG.md` are not packaged (`README.md`,
-  `THIRD_PARTY.md` and `analysis_policy.md` are).
+  `THIRD_PARTY.md`, `analysis_policy.md` and, since §10, `diagnosis_guide.md` are).
 - `test_version_is_consistent`: `metadata.yaml` (leading `v` stripped) == the `@register` literal == the
   first `## X.Y.Z - ` heading in CHANGELOG. `## Unreleased` does not match that pattern by design.
 - `worker.py`: the plugin root goes first on `sys.path` and the script dir is dropped, so `spark_core/profile.py`
@@ -226,6 +227,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | X3 / S1 | `test_compare_tolerates_older_overview_shape`, `test_history_lookup_failure_skips_comparison`, `test_history_save_failure_keeps_result` |
 | F8 | `test_version_is_consistent` |
 | Default access (§8) | `test_default_access_is_admin_only` |
+| Triage, prompts, legacy migration (§10, §12) | all of `tests/test_briefing.py`; legacy and payload tests in `tests/test_plugin.py` |
+| Report data (§10, §12) | `test_core.py`: world statistics, window counts, `test_wait_time_counts_outermost_wait_frames`, `test_platform_brand_is_reported` |
+| Oversized-report message (§12) | `test_oversized_report_message_explains_the_remedy` |
 
 ## 4. How to re-verify
 
@@ -246,12 +250,15 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 ## 5. Open items
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
-- Merge `v1.0.4` into `main`: no PR was created by the agent; that is the maintainer's call.
+- Merge `v1.0.4`, then `v1.0.5`, into `main`: `v1.0.5` is stacked on `v1.0.4` (§13). No PR was created by the
+  agent; that is the maintainer's call.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
   for now, §12). A scratch prototype existed and was never committed.
-- Prompt rewrite (§10) has not been evaluated against a live model yet; use `tools/dump_prompt.py`.
+- The prompts (§10, §12) have not been evaluated against a live model yet. `tools/dump_prompt.py` printed the
+  exact model input; it was removed at 1.0.5 release prep and can be restored with
+  `git show b9f0466:tools/dump_prompt.py`.
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
@@ -270,7 +277,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   new installs (AstrBot fills missing keys only), so treat it as a product decision and note it in CHANGELOG.
 - Do not classify waits (or anything else) by method names that only some platforms or versions use.
   Between-tick idle versus in-tick wait comes from MSPT in `triage()` (§12).
-- Load thresholds live only in `spark_core/briefing.py`. Prompt files refer to `triage.load` / `triage.spikes`
+- Load thresholds live only in `spark_core/briefing.py`. Prompt files refer to `triage.load` / `triage.spikes` /
+  `triage.wait_kind`
   and must not restate the numbers (CHANGELOG may, as a record).
 - Every file `main.py` reads with `with_name(...)` must be in `tools/package_plugin.py`'s list
   (`test_prompt_files_are_packaged`); otherwise the release zip crashes at load.
@@ -370,11 +378,11 @@ is exactly the round-2 work (`33b147c`, `8090d18`) plus this prep.
   `main` (the release commit is a squash). Restart the work branch from `main` before new work, so later
   diffs do not repeat these commits.
 
-## 10. Prompt rewrite and model-input changes (Unreleased)
+## 10. Prompt rewrite and model-input changes (1.0.5)
 
 Maintainer feedback: replies analysed too much, buried the conclusion and were verbose. Requested: a built-in
 system prompt that helps the model reach a conclusion faster. Phase 1 of the agreed plan is implemented
-(proposal items A, B1-B3, B5, C, D); phase 2 (B4, per-category tick breakdown) is not started.
+(proposal items A, B1-B3, B5, C, D); phase 2 (B4, per-category tick breakdown) was later shelved (§12).
 
 **Evidence the redesign rests on.** A maintainer-supplied report and the reply it produced, reproduced in a
 scratch directory with the plugin's own loader. The report: NeoForge 1.21.1, 33.5 s, 3 players, TPS ~20,
@@ -449,7 +457,8 @@ defaults. Every historical `analysis_prompt` default and `reply_prompt.txt` in g
   provider reports, so a provider that misreports cannot be detected this way.
 - The history note shown in chat no longer exposes the record id (it is still logged). It repeats the
   `server=` / `problem=` tags the user typed, because `compare` matches records by tags.
-- `tools/dump_prompt.py <url> [question]` prints the exact system prompt and user message.
+- `tools/dump_prompt.py <url> [question]` printed the exact system prompt and user message (removed at 1.0.5
+  release prep, §13).
 
 **Tests (+22):** `tests/test_briefing.py` covers the load classes and spike boundaries, summary wording,
 unclassified waiting, vm_args trimming and the JVM-question exception, payload rules, legacy detection
@@ -458,7 +467,7 @@ unclassified waiting, vm_args trimming and the JVM-question exception, payload r
 replacement (saved and unsaved), keeping custom text, the served-model log, triage-first payload, tool
 parameter descriptions and the new history note. Each new test failed on the code before its change.
 
-## 11. Review item 1: worker `sys.path` under safe-path modes (Unreleased)
+## 11. Review item 1: worker `sys.path` under safe-path modes (1.0.5)
 
 - **Re-verified before implementing:** the real worker was run in a package-free venv, so protobuf was reachable
   only through `PYTHONPATH`.
@@ -486,7 +495,7 @@ parameter descriptions and the new history note. Each new test failed on the cod
     `sys.executable` is the app itself and the worker cannot start.
   - Neither is addressed by this fix.
 
-## 12. Reorientation: quick triage, multi-platform (Unreleased)
+## 12. Reorientation: quick triage, multi-platform (1.0.5)
 
 **Maintainer direction** (given after phase 1):
 - The plugin is for quick triage: describe the current state and point at suspected problems. Root-cause
@@ -568,5 +577,33 @@ All stay under the worker's 200-character error cap. Checked by running the real
 **Not done (maintainer decision):**
 - No category breakdown, and no new commands or settings.
 - Leaf-size reports are still refused rather than partially analysed.
-- None of these prompts has been evaluated against a live model yet; `tools/dump_prompt.py` prints what
-  would be sent.
+- None of these prompts has been evaluated against a live model yet (see §5).
+
+## 13. Release prep for 1.0.5
+
+Requested by the maintainer after §12: keep only what the merge needs, fill in CHANGELOG and this file, and
+create branch `v1.0.5`. 1.0.5 is §10-§12 (`e07adbe`, `af5fd32`, `b9f0466`) plus this prep.
+
+- **Version** 1.0.4 -> 1.0.5 in `metadata.yaml`, the `@register(...)` literal and the CHANGELOG heading
+  (`## Unreleased` -> `## 1.0.5 - 2026-10-11`, the maintainer's local date, KST). `test_version_is_consistent`
+  checks all three.
+- **CHANGELOG:** the section is user-facing. A "版本号升至 1.0.5" line replaces the `dump_prompt.py` line, and
+  an 未改动 subsection records that dependencies and limits are unchanged and that only the
+  `analysis_prompt` default changed (old defaults migrate automatically, custom text is kept).
+- **AI statement** (README and CHANGELOG header) now says Opus 5.5 worked on 1.0.3 to 1.0.5, including the
+  prompt rewrite.
+- **Files:**
+  - Removed `tools/dump_prompt.py`. It was new in this cycle and only a development aid; nothing imports it
+    and packaging does not need it. Restore it with `git show b9f0466:tools/dump_prompt.py`.
+  - Added since 1.0.4, all needed: `diagnosis_guide.md` (read at load, packaged), `spark_core/briefing.py`
+    (runtime) and `tests/test_briefing.py`.
+  - `tools/build_schema.py` and `tools/check_sample.py` predate this work and were kept, as decided in §7.
+- **Release branch `v1.0.5`:** `v1.0.4` was still unmerged, so `v1.0.5` was created from `origin/v1.0.4`
+  (`2d36ac2`). It has a single commit whose tree is identical to the tip of `claude/keen-bohr-d01us1` (built
+  with `git read-tree -u --reset`; verified with an empty `git diff`). The commit's own diff therefore contains
+  only the 1.0.5 changes.
+  - If `v1.0.4` is merged with a merge commit first, a PR from `v1.0.5` shows only that one commit.
+  - If `v1.0.4` is squash-merged instead, the merge base stays at `9a9bad2`, so the `v1.0.5` PR would list the
+    1.0.4 changes again (GitHub diffs against the merge base). Merging `main` into `v1.0.5` first fixes that
+    without conflicts: both sides made identical changes from the same base.
+- **Next round:** restart the work branch from `main` once both release branches are merged (see §9).

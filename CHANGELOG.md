@@ -1,15 +1,15 @@
 [![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
 
 > [!IMPORTANT]
-> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 与 1.0.4 版本的修改方案制定、缺陷修复、测试、配置页说明重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
+> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.5 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
 
 # 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## Unreleased
+## 1.0.5 - 2026-10-11
 
-> 本节修改由 **Claude Opus 5.5**（通过 **Claude Code**）依据维护者确认的方案完成。实现细节、依据与验证方式见 [handoff.md](handoff.md)。
+> 本版本由 **Claude Opus 5.5**（通过 **Claude Code**）依据维护者确认的方案完成修改。实现细节、依据与验证方式见 [handoff.md](handoff.md)。
 
 ### 修复
 
@@ -23,17 +23,22 @@
 - **支持插件端**：内置规则和诊断手册同时覆盖 Forge、NeoForge 模组端和 Paper、Folia、Leaf 等插件端，建议须符合报告的平台。
 - **内置诊断手册**：新增固定的判读规则、常见卡顿来源的第一步检查，以及后续采样命令（例如专门抓偶发尖峰的 `/spark profiler start --only-ticks-over`）。
 - **负载判定由插件计算**：持续过载（TPS 低于 15 或 MSPT 中位数高于 70 毫秒）、轻微过载（TPS 低于 19.5 或 MSPT 中位数高于 40 毫秒，多人多维度服务器常见）、偶发尖峰（MSPT 最大值超过 500 毫秒且超过中位数 5 倍）由插件算好，模型直接采用。
-- **等待时间按 MSPT 判断**：tick 线程的等待是 tick 之间的空闲还是 tick 内的等待，按 MSPT 中位数判断（低于 40 毫秒为空闲，达到 50 毫秒为 tick 内等待，之间不下结论），不再依赖只在部分平台和版本可用的方法名。
+- **区分空闲与卡顿中的等待**：tick 线程的等待是 tick 之间的空闲还是 tick 内的等待，按 MSPT 中位数判断（低于 40 毫秒为空闲，达到 50 毫秒为 tick 内等待，之间不下结论）。只用 spark 自带的 MSPT 数据，各平台和版本通用，避免把空闲误报为问题。
 - **读取更多报告信息**：实体统计（总数、类型、各维度数量、实体最多的区块及坐标）和与性能有关的游戏规则。
 - **发送给模型的数据更精简**：JVM 启动参数默认只保留内存和 GC 相关的关键项，询问 JVM、GC 或启动参数时才提供全文。
 - **旧的默认回复要求自动更新**：配置中的“分析回复要求”如果仍是旧版默认内容，会自动换成新版并保存；自己修改过的内容保持不变。
 - **日志记录实际服务的模型**：日志中显示服务商返回的模型名（`served_model`），便于发现请求被转到了其他模型。
 - 分析完成后的历史提示改为“已保存本次结果；之后再次分析时加上 compare，可与本次对比”，不再显示内部记录编号；用户自己写了 server= 或 problem= 时，会提示下次带上相同标签。
-- 开发相关：新增 `tools/dump_prompt.py`，输出某份报告发送给模型的完整内容，便于对比提示词效果。
+- 版本号升至 1.0.5。
 
 ### 测试
 
 - 单元测试由 71 项增至 99 项。
+
+### 未改动
+
+- 依赖（`requirements.txt`）未改动；下载与解析限额未放宽。
+- 配置项键名不变，只有“分析回复要求”的默认内容改变；仍是旧默认内容的配置会自动更新，自己修改过的保持不变。
 
 ## 1.0.4 - 2026-10-11
 
