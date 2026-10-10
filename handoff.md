@@ -13,7 +13,7 @@ CHANGELOG for that).
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.3 (see §7). Changes are under `## 1.0.3 - 2026-10-11` in `CHANGELOG.md`. |
-| Tests | 51 -> 68, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | 51 -> 71, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -148,8 +148,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 - `History.purge()` returns 0 if the file is absent (never creates it); otherwise it opens `connect()`
   (which runs the expiry `DELETE`) and returns `total_changes`.
 - `History.delete()` is gated on the file existing, not on `enabled`, so `/spark forget` works when disabled.
-- `__init__` calls `purge()` synchronously (`__init__` cannot await; the DB is small), wrapped in
-  `except (sqlite3.Error, OSError)`. A corrupt DB must not block plugin load.
+- The startup purge runs in `initialize()` (originally in `__init__`; moved in review round 2, see §8):
+  `await asyncio.to_thread(self.history.purge, 1)` inside `except Exception`. A corrupt or locked DB must
+  never fail or stall plugin load.
 - **Limitation:** while disabled, expiry only runs at load or reload.
 - **Tests:** `test_history_retention_while_disabled`, `test_history_retention_and_forget_while_disabled`,
   `test_corrupt_history_database_does_not_block_loading`. The existing "no DB file when disabled" assertion
@@ -213,6 +214,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | X1 | `test_close_removes_directory_when_worker_wait_fails`, `test_terminate_closes_every_session` |
 | F6 | `test_link_boundaries` |
 | F3 | `test_history_retention_while_disabled`, `test_history_retention_and_forget_while_disabled`, `test_corrupt_history_database_does_not_block_loading` |
+| Review item 2 (§8) | `test_locked_history_does_not_stall_loading`, `test_forget_reports_unreadable_history`, `test_forget_reports_busy_history` |
 | X3 / S1 | `test_compare_tolerates_older_overview_shape`, `test_history_lookup_failure_skips_comparison`, `test_history_save_failure_keeps_result` |
 | F8 | `test_version_is_consistent` |
 | Default access (§8) | `test_default_access_is_admin_only` |
@@ -221,7 +223,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 68 OK
+python -m unittest discover -s tests        # expect 71 OK
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
@@ -279,8 +281,8 @@ then created at the same commit (the naming follows the existing `v1.0.2` releas
 
 ## 8. Review round 2 (after release prep)
 
-Maintainer review of the branch raised four items. Items 3 and 4 were implemented; items 1 and 2 were only
-proposed, pending the maintainer's choice. Branch `v1.0.3` still points at `c4c1311` and does not have
+Maintainer review of the branch raised four items. Items 3, 4 and then 2 were implemented; item 1 is
+proposed only, pending the maintainer's go-ahead. Branch `v1.0.3` still points at `c4c1311` and does not have
 this round.
 
 - **Item 4, default access (implemented):** the `access_mode` default changed from `all` to `admin_only`
@@ -298,9 +300,27 @@ this round.
   lists all live in §2-§3 of this file.
 - **Item 1, `worker.py` `sys.path[0] = root` is unconditional (proposed):** with `PYTHONSAFEPATH=1` (or `-I`),
   `sys.path[0]` is not the script dir but a `PYTHONPATH` entry or the stdlib zip, and gets overwritten.
-- **Item 2, `/spark forget` has no error guard, and sqlite has no explicit timeout (proposed):** `History.delete()`
-  raises `DatabaseError` on a corrupt file and nothing catches it in `spark_command`. `purge()` runs
-  synchronously in `__init__` with sqlite's default 5 s busy timeout, which can stall plugin load on a locked DB.
-  - Note for whoever implements it: AstrBot awaits `star_cls.initialize()` inside the plugin-load `try`
-    (`star_manager.py:1420` in 4.28.2, `:656` in 4.16.0), so an exception escaping `initialize()` fails the
-    plugin load.
+- **Item 2, `/spark forget` error guard and sqlite timeouts (implemented):**
+  - **Reproduced first:** `/spark forget` on a corrupt file raised an uncaught `DatabaseError`. With another
+    connection holding `BEGIN EXCLUSIVE`, plugin construction blocked for 5.01 s (sqlite's default busy
+    timeout), and asyncio reported the event loop blocked for 5.015 s.
+  - **Startup purge** moved from `__init__` to `async def initialize()`, run via `asyncio.to_thread` with a 1 s
+    lock timeout, inside `except Exception` with a warning log.
+    - Constraints: AstrBot awaits `star_cls.initialize()` inside the plugin-load `try` (`star_manager.py:1420`
+      in 4.28.2, `:656` in 4.16.0), so anything escaping fails the plugin load. `Star.initialize` is an empty
+      no-op in both versions, so there is no `super()` call to make.
+    - Why 1 s: this plugin is the only writer of `history.sqlite3`. The realistic contention is AstrBot's
+      reload on every config save, where the old instance may be finishing a single-row write (milliseconds).
+      A lock held longer than 1 s means an external holder, where waiting does not help. Plugins load
+      sequentially, so each second here delays every later plugin. A skipped purge is retried on the next load.
+  - **`History.connect(timeout=5)` / `purge(timeout=5)`:** the timeout is now an explicit parameter. All
+    other callers (`list`, `save`, `delete`) keep 5 s, the sqlite default. They run in worker threads, so the
+    loop is not blocked, and the user is waiting for the result.
+  - **`/spark forget`** catches `(sqlite3.Error, OSError)`, logs only the type name, and replies with one of
+    two messages. Both state that nothing was deleted, which is accurate because the delete is a single transaction:
+    - `OperationalError` whose message contains `locked` -> "历史数据库正忙，记录未清除，请稍后再试。"
+      Verified once against a real lock (sqlite's text is "database is locked").
+    - Anything else (corrupt file, disk or permission error) -> "历史数据库无法读取，记录未清除，请联系管理员检查历史数据库文件。"
+    - `str(exc)` is only used to classify, never shown in chat (the path-leak rule still holds).
+  - The report cache DB needed no change: it does not touch the DB at init, and it only runs in worker
+    threads (30 s timeout).

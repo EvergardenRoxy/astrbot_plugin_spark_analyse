@@ -33,10 +33,6 @@ class SparkPlugin(Star):
         self.cache = ProfileCache(self.root/'profiles.sqlite3', config.get('profile_cache_hours', 72))
         self.background_tasks = set()
         self.history = History(self.root/'history.sqlite3', bool(config.get('history_enabled', False)))
-        try:
-            self.history.purge()
-        except (sqlite3.Error, OSError) as exc:
-            logger.warning('Spark history purge failed: %s', type(exc).__name__)
         self.policy = Path(__file__).with_name('analysis_policy.md').read_text(encoding='utf-8')
         self.default_reply_prompt = Path(__file__).with_name('reply_prompt.txt').read_text(encoding='utf-8')
         self.active = set()
@@ -44,6 +40,15 @@ class SparkPlugin(Star):
         self.tasks = set()
         self.sessions = set()
         self.gate = asyncio.Semaphore(1)
+
+    async def initialize(self):
+        # AstrBot awaits this inside its plugin-load try, so nothing may escape. Plugins load one after
+        # another: the purge runs off the event loop and waits at most 1 s for a lock. Only this plugin
+        # writes the file, so a longer lock is external; skip and retry on the next load.
+        try:
+            await asyncio.to_thread(self.history.purge, 1)
+        except Exception as exc:
+            logger.warning('Spark history purge failed: %s', type(exc).__name__)
 
     def owner(self, event):
         return hashlib.sha256((event.unified_msg_origin+'\0'+event.get_sender_id()).encode()).hexdigest()
@@ -85,8 +90,17 @@ class SparkPlugin(Star):
             event.stop_event()
             return
         if text == 'forget':
-            count = await asyncio.to_thread(self.history.delete, self.owner(event))
-            yield event.plain_result(f'已清除当前发送者在此会话的历史记录：{count}条。')
+            try:
+                count = await asyncio.to_thread(self.history.delete, self.owner(event))
+            except (sqlite3.Error, OSError) as exc:
+                # The delete is one transaction, so nothing was removed. A lock clears on retry; a damaged
+                # or unreadable file needs an admin.
+                logger.warning('Spark history forget failed: %s', type(exc).__name__)
+                busy = isinstance(exc, sqlite3.OperationalError) and 'locked' in str(exc)
+                yield event.plain_result('历史数据库正忙，记录未清除，请稍后再试。' if busy else
+                                         '历史数据库无法读取，记录未清除，请联系管理员检查历史数据库文件。')
+            else:
+                yield event.plain_result(f'已清除当前发送者在此会话的历史记录：{count}条。')
             event.stop_event()
             return
         async for result in self.handle(event, text):

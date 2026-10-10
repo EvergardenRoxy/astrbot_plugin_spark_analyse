@@ -325,6 +325,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             db.execute("UPDATE reviews SET created=0 WHERE rowid=1")
         db.close()
         disabled = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        await disabled.initialize()
         with sqlite3.connect(path) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 1)
         db.close()
@@ -338,8 +339,58 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_corrupt_history_database_does_not_block_loading(self):
         (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
-        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        # AstrBot awaits initialize() inside its plugin-load try: anything escaping fails the load.
+        await plugin.initialize()
         self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_locked_history_does_not_stall_loading(self):
+        path = Path(self.temp.name)/'history.sqlite3'
+        holder = sqlite3.connect(path)
+        holder.execute('CREATE TABLE reviews (id TEXT PRIMARY KEY, owner TEXT, server TEXT, problem TEXT, created REAL, overview TEXT, result TEXT)')
+        holder.commit()
+        holder.execute('BEGIN EXCLUSIVE')
+        ticks = 0
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+        running = asyncio.create_task(ticker())
+        try:
+            started = asyncio.get_running_loop().time()
+            plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+            await plugin.initialize()
+            elapsed = asyncio.get_running_loop().time() - started
+        finally:
+            running.cancel()
+            holder.rollback()
+            holder.close()
+        # Bounded wait for the lock, and the event loop kept running meanwhile.
+        self.assertLess(elapsed, 3)
+        self.assertGreater(ticks, 10)
+        self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_forget_reports_unreadable_history(self):
+        (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event = Event()
+        event.message_str = '/spark forget'
+        result = [r async for r in plugin.spark_command(event)]
+        self.assertEqual(len(result), 1)
+        self.assertIn('未清除', result[0])
+        self.assertIn('管理员', result[0])
+        self.assertTrue(event.stopped)
+        self.assertTrue(any('forget failed' in item[0] for item in self.logs))
+
+    async def test_forget_reports_busy_history(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event = Event()
+        event.message_str = '/spark forget'
+        with patch.object(plugin.history, 'delete', side_effect=sqlite3.OperationalError('database is locked')):
+            result = [r async for r in plugin.spark_command(event)]
+        self.assertIn('未清除', result[0])
+        self.assertIn('稍后', result[0])
 
     async def test_history_save_failure_keeps_result(self):
         async def agent(**kwargs): return types.SimpleNamespace(completion_text='模型结论')
