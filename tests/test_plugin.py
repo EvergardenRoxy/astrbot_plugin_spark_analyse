@@ -253,12 +253,28 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         event.send = send
         with patch.object(self.module, 'ReportSession', FakeSession):
             result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
-            self.assertIn('后台', result[0])
+            # No return value: AstrBot ends the main agent's turn without a follow-up model call.
+            self.assertEqual(result, [])
             await asyncio.wait_for(started.wait(), 1)
             self.assertNotIn('后台结果', sent)
             release.set()
             await asyncio.gather(*list(plugin.background_tasks))
         self.assertIn('后台结果', sent)
+        self.assertEqual(sent[0], '已收到Spark报告，开始分析流程。')
+
+    async def test_tool_duplicate_report_gets_notice(self):
+        # The main model no longer replies after the tool, so a duplicate must not be silent there.
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
+        plugin.inflight_reports.add('SyntheticReport001')
+        event, sent = Event(), []
+        async def send(result): sent.append(result)
+        event.send = send
+        result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
+        await asyncio.gather(*list(plugin.background_tasks))
+        self.assertEqual(result, [])
+        self.assertEqual(len(sent), 1)
+        self.assertIn('正在分析', sent[0])
+        self.assertFalse(event.stopped)
 
     async def test_startup_sweeps_stale_session_dirs(self):
         # A crashed host leaves spark-* directories holding the full decoded report.
@@ -339,7 +355,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         event.send = send
         result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
         await asyncio.gather(*list(plugin.background_tasks))
-        self.assertIn('后台', result[0])
+        self.assertEqual(result, [])
         self.assertTrue(any('不会回落' in r for r in sent))
         self.assertFalse(event.stopped)
 

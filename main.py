@@ -94,11 +94,11 @@ class SparkPlugin(Star):
 
     @filter.llm_tool(name='spark_analyze')
     async def analyze_tool(self, event: AstrMessageEvent, report_url: str, observation: str = ''):
-        '''加载Spark报告并交给插件配置的专用分析模型；失败按备用模型顺序重试，不由主聊天模型分析原始数据。
+        '''把Spark性能报告交给插件分析。插件在后台下载报告并用专用分析模型分析，进度和结论会直接发给用户；本工具没有返回内容，调用后不要重复调用，也不要自己推测分析结论。
 
         Args:
-            report_url(string): 官方https://spark.lucko.me/报告ID链接。
-            observation(string): 用户现象，可附server=标签 problem=标签 compare。
+            report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID。
+            observation(string): 用户描述的现象，可选。可附 server=服务器标签、problem=问题标签；需要与上次结果对比时加 compare。
         '''
         if not self.allowed(event):
             yield '此会话或用户没有Spark分析权限。'
@@ -114,7 +114,8 @@ class SparkPlugin(Star):
         task = asyncio.create_task(run())
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
-        yield 'Spark分析已转交插件后台执行，完成后直接发送结果；不要重复提交或自行假设分析结论。'
+        # No return value: AstrBot then ends the main agent's turn without another model call,
+        # so the plugin's own messages are the whole reply.
 
     async def handle(self, event, text, *, stop=True):
         # stop=False for the tool path: the event belongs to the main chat agent, and
@@ -133,7 +134,7 @@ class SparkPlugin(Star):
             return
         provider = str(self.config.get('analysis_provider_id', '')).strip()
         if not provider:
-            yield event.plain_result('请先在插件配置选择Spark专用分析模型；不会回落到主聊天模型。')
+            yield event.plain_result('请先在插件配置中选择“分析模型”；不会回落到主聊天模型。')
             if stop:
                 event.stop_event()
             return
@@ -142,6 +143,9 @@ class SparkPlugin(Star):
             logger.info('Spark duplicate in-flight report skipped')
             if stop:
                 event.stop_event()
+            else:
+                # The tool path gets no main-model reply, so silence would leave the user with nothing.
+                yield event.plain_result('这份Spark报告正在分析中，完成后会直接发送结果。')
             return
         if owner in self.active or self.gate.locked():
             yield event.plain_result('已有Spark分析正在执行，请稍后再试。')
