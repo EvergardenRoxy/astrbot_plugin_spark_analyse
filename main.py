@@ -52,7 +52,7 @@ class SparkPlugin(Star):
         allow = self.config.get('allowed_origins', [])
         if allow and event.unified_msg_origin not in allow:
             return False
-        mode = self.config.get('access_mode', 'all')
+        mode = self.config.get('access_mode', 'admin_only')
         admin = event.is_admin()
         if mode == 'admin_only':
             return admin
@@ -80,7 +80,7 @@ class SparkPlugin(Star):
     async def spark_command(self, event: AstrMessageEvent):
         text = re.sub(r'^/?spark(?:\s+|$)', '', event.message_str.strip(), count=1)
         if not self.allowed(event):
-            logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'all'))
+            logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'admin_only'))
             yield event.plain_result('此会话或用户没有Spark分析权限。')
             event.stop_event()
             return
@@ -121,7 +121,7 @@ class SparkPlugin(Star):
         # stop=False for the tool path: the event belongs to the main chat agent, and
         # stopping it aborts the main model's reply.
         if not self.allowed(event):
-            logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'all'))
+            logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'admin_only'))
             yield event.plain_result('此会话或用户没有Spark分析权限。')
             if stop:
                 event.stop_event()

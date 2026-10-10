@@ -18,7 +18,9 @@ class Event:
     def get_sender_id(self): return 'alice'
     def plain_result(self, text): return text
     stopped = False
-    def is_admin(self): return getattr(self, 'admin', False)
+    # Default access is admin_only, so the test user is an admin unless a test says otherwise.
+    admin = True
+    def is_admin(self): return self.admin
     def stop_event(self): self.stopped = True
 
 class FakeSession:
@@ -151,6 +153,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_access_modes_and_all_entry_points(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'access_mode':'admin_only'})
         event = Event()
+        event.admin = False
         self.assertFalse(plugin.allowed(event))
         event.admin = True
         self.assertTrue(plugin.allowed(event))
@@ -165,6 +168,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.config['access_mode'] = 'admin_only'
         def fresh():
             event = Event()
+            event.admin = False
             event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
             return event
         # Auto analysis ignores non-permitted users so other handlers still see the message.
@@ -174,6 +178,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         for handler in (plugin.spark_command, lambda e: plugin.analyze_tool(e, 'https://spark.lucko.me/SyntheticReport001')):
             results = [r async for r in handler(fresh())]
             self.assertIn('权限', results[0])
+
+    async def test_default_access_is_admin_only(self):
+        # Code fallback and schema default must agree; AstrBot fills missing keys from the schema.
+        schema = __import__('json').loads((ROOT/'_conf_schema.json').read_text(encoding='utf-8'))
+        self.assertEqual(schema['access_mode']['default'], 'admin_only')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        member = Event()
+        member.admin = False
+        self.assertFalse(plugin.allowed(member))
+        self.assertTrue(plugin.allowed(Event()))
 
     async def test_duplicate_inflight_report_is_quiet(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})

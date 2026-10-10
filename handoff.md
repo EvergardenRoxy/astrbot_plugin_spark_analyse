@@ -13,7 +13,7 @@ CHANGELOG for that).
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.3 (see §7). Changes are under `## 1.0.3 - 2026-10-11` in `CHANGELOG.md`. |
-| Tests | 51 -> 67, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | 51 -> 68, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -173,6 +173,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
   field except `description`, `hint`, `obvious_hint`, `labels` and `templates` is identical. `templates`
   was checked separately (only its display text changed). So **keys, types, defaults, sliders,
   `_special` and the default `analysis_prompt` are unchanged**. Existing user configs are unaffected.
+  (Superseded for one field in review round 2: `access_mode` default is now `admin_only`, see §8.)
 - **Order:** JSON key order is the UI order. Groups: model -> access -> trigger -> reply -> data -> network.
 - **`labels` on `access_mode`** and **`obvious_hint` on `analysis_provider_id`:** support confirmed in the
   4.28.2 dashboard bundle (`dashboard/dist/assets/ProviderSelectMenu-*.js`:
@@ -214,12 +215,13 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | F3 | `test_history_retention_while_disabled`, `test_history_retention_and_forget_while_disabled`, `test_corrupt_history_database_does_not_block_loading` |
 | X3 / S1 | `test_compare_tolerates_older_overview_shape`, `test_history_lookup_failure_skips_comparison`, `test_history_save_failure_keeps_result` |
 | F8 | `test_version_is_consistent` |
+| Default access (§8) | `test_default_access_is_admin_only` |
 
 ## 4. How to re-verify
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 67 OK
+python -m unittest discover -s tests        # expect 68 OK
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
@@ -249,7 +251,10 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   compressed / 128 MiB decoded, node/depth limits, worker `RLIMIT_AS`.
 - Never call `stop_event()` on the tool path. Never return text from `analyze_tool`'s success path without
   re-reading §2.2, since doing so brings back the extra main-model call.
-- Config schema: keys, types and defaults are a compatibility surface for existing installs. Change only display fields.
+- Config schema: keys and types are a compatibility surface for existing installs. A default change only reaches
+  new installs (AstrBot fills missing keys only), so treat it as a product decision and note it in CHANGELOG.
+- Default access is `admin_only`. The code fallback (`config.get('access_mode', 'admin_only')`, 3 places in
+  `main.py`) must match the schema default; `test_default_access_is_admin_only` checks both.
 
 ## 7. Release prep for 1.0.3
 
@@ -271,3 +276,31 @@ then created at the same commit (the naming follows the existing `v1.0.2` releas
   CHANGELOG section that points here. The model was confirmed from the session metadata (configured and
   last-served model both Opus 5.5) before writing it. The maintainer's own "作者注" block in README
   (`c47cc0f`) was left verbatim.
+
+## 8. Review round 2 (after release prep)
+
+Maintainer review of the branch raised four items. Items 3 and 4 were implemented; items 1 and 2 were only
+proposed, pending the maintainer's choice. Branch `v1.0.3` still points at `c4c1311` and does not have
+this round.
+
+- **Item 4, default access (implemented):** the `access_mode` default changed from `all` to `admin_only`
+  (maintainer decision, not open for discussion). Changed in the schema default, the hint, the 3 code
+  fallbacks in `main.py`, and README.
+  - Existing installs keep their saved value. Verified in `AstrBotConfig.check_config_integrity` (4.28.2 and
+    4.16.0): only missing keys get defaults.
+  - Test double: `Event.admin` now defaults to `True`. Under the new default, an admin is the minimal working
+    user, so tests unrelated to permissions keep passing unchanged. Permission tests set `admin = False`
+    explicitly. Before the code change, the full suite was run with the new test double: only the new default
+    test failed.
+  - `auto_analyze` stays on by default; with `admin_only` it only fires for admins, and is silent for others (F4).
+- **Item 3, CHANGELOG (implemented):** the 1.0.3 section was cut from ~7.8 KB to ~2.8 KB of user-facing
+  bullets. Nothing that was dropped is lost: AstrBot internals, version bisect, hot-reload note and per-test
+  lists all live in §2-§3 of this file.
+- **Item 1, `worker.py` `sys.path[0] = root` is unconditional (proposed):** with `PYTHONSAFEPATH=1` (or `-I`),
+  `sys.path[0]` is not the script dir but a `PYTHONPATH` entry or the stdlib zip, and gets overwritten.
+- **Item 2, `/spark forget` has no error guard, and sqlite has no explicit timeout (proposed):** `History.delete()`
+  raises `DatabaseError` on a corrupt file and nothing catches it in `spark_command`. `purge()` runs
+  synchronously in `__init__` with sqlite's default 5 s busy timeout, which can stall plugin load on a locked DB.
+  - Note for whoever implements it: AstrBot awaits `star_cls.initialize()` inside the plugin-load `try`
+    (`star_manager.py:1420` in 4.28.2, `:656` in 4.16.0), so an exception escaping `initialize()` fails the
+    plugin load.
