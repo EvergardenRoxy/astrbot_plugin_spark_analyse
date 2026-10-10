@@ -13,7 +13,7 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.6 (§16) on the work branch; no release branch yet. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`. |
+| Version | 1.0.6 (§16), release branch `v1.0.6` (§17), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`. |
 | Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
@@ -42,7 +42,8 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `170f6d2` | Release prep for 1.0.5 (§13). Branch `v1.0.5` holds the same tree as one commit on `v1.0.4`. |
 | `39331aa` | Merge of `main` (PR #3) into the work branch; tree unchanged (§13) |
 | `8290b71` | `checklist.md` split (§14); review round 3 findings verified and proposals recorded (§15) |
-| last commit | Review round 3 implemented, version 1.0.6 (§16) |
+| `10394bf` | Review round 3 implemented, version 1.0.6 (§16) |
+| last commit | Release prep for 1.0.6 (§17). Branch `v1.0.6` holds the same tree as one commit on `main`. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -266,8 +267,7 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Review round 3: R3-1, R3-4 and R3-5 implemented (§16). R3-3 declined by the maintainer: spark keeps a report
   for only about 3 days (depending on size), so a logged id soon stops working. R3-2 (parse `MemoryError`
   message, §15) was not taken up and stays open.
-- 1.0.6 is on the work branch only (§16); no release branch has been cut. The maintainer called the version
-  bump temporary.
+- Merge `v1.0.6` into `main` (§17). No PR was created by the agent; that is the maintainer's call.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
@@ -808,3 +808,20 @@ fallback loop, cancellation, cleanup).
 **Delivery:** at the maintainer's request, nothing was committed at first. They received
 `dist/astrbot_plugin_spark-v1.0.6.zip` and a patch against `8290b71`. On their next instruction the same changes
 were committed to `claude/keen-bohr-d01us1`; the commit equals the patch plus these handoff status edits.
+
+## 17. Release prep for 1.0.6
+
+The maintainer asked for a `v1.0.6` release branch, built the same way as `v1.0.4` and `v1.0.5`. 1.0.6 is
+`8290b71` (§14-§15 documents) plus `10394bf` (§16), plus this prep.
+
+- **Base:** `origin/main` at `525634f` (PR #3, 1.0.5). The work branch already contained it through `39331aa`,
+  so the diff against `main` holds only 1.0.6 changes.
+- **Version:** 1.0.6 was set in §16 in `metadata.yaml`, the `@register(...)` literal and `## 1.0.6 - 2026-10-11`
+  (maintainer's local date, KST). It was called temporary there; the release keeps it.
+  `test_version_is_consistent` checks all three.
+- **Files:** the only new file since 1.0.5 is `checklist.md`, a public repository document that is not
+  packaged. Nothing was removed: every other file is runtime, test, tooling, or one of the record documents.
+- **Release branch `v1.0.6`:** a single commit on `origin/main` whose tree is identical to the tip of
+  `claude/keen-bohr-d01us1` (built with `git read-tree -u --reset`; verified with an empty `git diff`). A PR from
+  `v1.0.6` to `main` therefore shows exactly the 1.0.6 changes.
+- **Next round:** once `v1.0.6` is merged, merge `main` into the work branch again, as in §13, before new work.
