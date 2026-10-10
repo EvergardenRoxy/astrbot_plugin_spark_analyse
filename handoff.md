@@ -2,7 +2,8 @@
 
 Audience: engineers or LLM agents debugging or reviewing this branch. This is a record of what was changed,
 why, what evidence the decisions rest on, and where the risk is. It is not user documentation (see README /
-CHANGELOG for that).
+CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for users and repository reviewers
+(§14); keep the two consistent when either changes.
 
 ## 1. Context
 
@@ -12,7 +13,7 @@ CHANGELOG for that).
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.5 (§13). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`); `v1.0.4` (§9) was not yet merged when 1.0.5 was prepared. Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5` (stacked on `v1.0.4`). |
+| Version | 1.0.5 (§13), merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`. |
 | Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
@@ -38,7 +39,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `e07adbe` | Prompt rewrite and model-input changes (§10) |
 | `af5fd32` | Review item 1: worker `sys.path` under safe-path modes (§11) |
 | `b9f0466` | Reorientation: quick triage, multi-platform wait rule, oversized-report messages (§12) |
-| last commit | Release prep for 1.0.5 (§13). Branch `v1.0.5` holds the same tree as one commit on `v1.0.4`. |
+| `170f6d2` | Release prep for 1.0.5 (§13). Branch `v1.0.5` holds the same tree as one commit on `v1.0.4`. |
+| `39331aa` | Merge of `main` (PR #3) into the work branch; tree unchanged (§13) |
+| last commit | `checklist.md` split (§14); review round 3 findings verified and proposals recorded, not implemented (§15) |
 
 ## 2. Changes, reasoning, evidence
 
@@ -250,8 +253,7 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 ## 5. Open items
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
-- Merge `v1.0.4`, then `v1.0.5`, into `main`: `v1.0.5` is stacked on `v1.0.4` (§13). No PR was created by the
-  agent; that is the maintainer's call.
+- Review round 3 (§15): five findings verified; proposals await the maintainer's decision.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
@@ -607,3 +609,100 @@ create branch `v1.0.5`. 1.0.5 is §10-§12 (`e07adbe`, `af5fd32`, `b9f0466`) plu
     1.0.4 changes again (GitHub diffs against the merge base). Merging `main` into `v1.0.5` first fixes that
     without conflicts: both sides made identical changes from the same base.
 - **Next round:** restart the work branch from `main` once both release branches are merged (see §9).
+  - Done differently after PR #3 merged `v1.0.5` (with `v1.0.4`) into `main`: `main` was merged into the work
+    branch (`39331aa`) instead of resetting it. A reset would have dropped the only refs to `33b147c`, `8090d18`,
+    `1106402`, `e07adbe`, `af5fd32`, `b9f0466` and `170f6d2`, which this file cites (including
+    `git show b9f0466:tools/dump_prompt.py`). The trees were identical, so the merge changed no file, and the
+    next release branch can again be cut from `main` with one commit whose tree equals the work-branch tip.
+
+## 14. Documentation split: `checklist.md`
+
+Maintainer request: `handoff.md` stays the machine-oriented record of what was done each time; a new
+`checklist.md` explains the work to users and repository reviewers in plain language.
+
+- `checklist.md` (Chinese, like README and CHANGELOG): role of each record file; current state; how to run the
+  checks; the manual pre-release checks as a checkbox list (same items as §4 plus the §10/§12 prompt and
+  platform checks); the boundaries the plugin keeps (§6 in user terms); per-version "why / what / how to check"
+  for 1.0.3-1.0.5; known limitations (§5).
+- It cites no real report link or id (F7). Compatibility numbers come from §12; the memory figure comes from §15.
+- It is a repository document only: not in `tools/package_plugin.py`'s list, so not shipped in the zip.
+- CHANGELOG gets an `## Unreleased` line for it. The maintainer's README author note is left verbatim.
+- When work changes behaviour, update `checklist.md` in the same commit: the per-version section, and the manual
+  checks or limitations if they move.
+
+## 15. Review round 3 (verified; proposals only, not implemented)
+
+The maintainer passed on five review findings: check them, propose fixes, implement after their review. All
+five reproduce on `39331aa`. The proposals add no features. Suggested order: R3-5, R3-3, R3-1, R3-2, then R3-4
+(optional).
+
+**R3-1: `compare` can do nothing without saying so** (`handle()`, anchor `history comparison skipped`).
+- Verified:
+  - A lookup happens only when `server` is non-empty: the typed `server=`, else `runtime.server_hint.tag`, which
+    is empty when the report has no OS or CPU data.
+  - `History.list` returns `[]` while history is disabled.
+  - Without `problem=`, the tag is `JVM与GC` when the text matches `JVM|GC|启动参数|堆内存`, else `性能分析`.
+    "掉TPS" then "JVM 调整后 compare" therefore look up different tags and find nothing.
+  - In every such case `comparison` is `None`, the model gets `history_comparison: null`, and the user is not
+    told. A history read error is only logged.
+  - `'compare' in text.lower()` also matches "comparison", "compared", or a report id containing the letters.
+- Proposal:
+  - Detect the keyword as a standalone ASCII word: `(?<![A-Za-z0-9_])compare(?![A-Za-z0-9_])`, case-insensitive.
+    Python's `\b` does not work here, because CJK characters count as word characters ("调整后compare").
+  - When `compare` is asked and no `problem=` was typed, match on owner and server only (`History.list(...,
+    problem='')`, already supported) and take the latest row. A typed `problem=` keeps exact matching. Saved rows
+    keep the auto tag.
+  - When `compare` is asked but no comparison happens, give the reason in one chat line after the result, and
+    pass the same reason to the model so the reply does not contradict it. Reasons: history disabled; no earlier
+    record for this sender and server tag within 30 days; no server tag (add `server=`); history unreadable.
+  - Tests: no false trigger on "comparison"; differing auto problem tags still compare; each skip reason reaches
+    the chat.
+
+**R3-2: parse memory near the size limit** (`worker.py`, `RLIMIT_AS` 1.5 GiB, not on Windows).
+- Verified that the cap is skipped on `win32`. Measured in scratch (`resource.ru_maxrss`, same `Profile` +
+  `overview()` + `evidence_pack()` path as the worker; the size check was bypassed for the Leaf file):
+
+| Input | Shape | Peak RSS | Time | Under the 1.5 GiB cap |
+|---|---|---|---|---|
+| Leaf report, 149.8 MiB (real) | 1 thread, ~254k nodes, 61 windows | 449 MiB | 22-25 s | parses |
+| Synthetic, 125.5 MiB | 999,000 nodes, 2 windows, long names | 781 MiB | 12 s | parses |
+| Synthetic, 134.1 MiB | 999,000 nodes, 12 windows | 815 MiB | 25.5 s | parses |
+
+- So the node limit, not the byte limit, drives memory, and the cap leaves about 1.9× headroom. Parse time can
+  exceed a parse timeout set to its 15 s minimum; the default 90 s is enough.
+- Failure modes under a tighter cap, same 125.5 MiB file:
+  - 300 MiB: protobuf raises `DecodeError`. That is indistinguishable from a corrupt report, and the session also
+    drops the cached download.
+  - 500 MiB: the interpreter died with no output; users would see "解析worker异常退出".
+  - 700 MiB: `MemoryError`; chat shows "报告解析失败（MemoryError）".
+- Proposal: in `worker.py`, map `MemoryError` to a plugin-authored message (memory ran out while parsing, the
+  profile was probably too long, `--timeout 300`). Add a unit test that patches `Profile` to raise it.
+  - The crash and `DecodeError` cases cannot be told apart reliably, so leave them as they are.
+  - No Windows cap: a Job Object via `ctypes` is real complexity for a measured peak under 1 GiB; document it
+    instead (done in `checklist.md`).
+  - No near-limit test in CI: it needs about 30 s and about 1 GiB of RAM. The table above is the record.
+
+**R3-3: report ids in info logs.**
+- Verified: `main.py` (`accepted; report=%s`) and `session.py` (`raw cache %s; report=%s`) log the bare id. A spark
+  link is a capability URL: anyone with the id can open the report, which includes JVM arguments, the mod or
+  plugin list and system details. Operators paste logs into issues and chats when asking for help.
+- Proposal: log a fingerprint instead, the first 10 hex characters of `sha256(report_id)`, in both places. Lines
+  still correlate, and an operator can match a link by hashing it.
+  - The cache DB keeps the raw id as its key: it is local data needed for lookup, not a log.
+  - Test: capture logs through a full analysis and assert that the id never appears.
+
+**R3-4: `handle()` is about 180 lines** (one async generator: checks, download, history, a nested tool, the
+fallback loop, cancellation, cleanup).
+- Proposal (optional; no behaviour change; separate commit, done last): extract the parts that do not yield.
+  - Helpers: `_tags(text, overview)`; `_history_context(...)`, which also absorbs R3-1;
+    `_query_tool(session, owner, trace)`, returning the tool and its call counter; `_ask(...)`, holding one
+    provider attempt with the 300 s wait and `cancel_bounded`; and `_save_history(...)`.
+  - `handle()` keeps the pre-checks, the bookkeeping, every `yield` and the `except`/`finally`; roughly 80 lines.
+  - Risk to watch: the §2.4 guard, "no fallback while a stuck task could still send", must keep its `remaining`
+    semantics.
+  - The 33 plugin tests cover these paths; expect no test edits beyond patch targets.
+
+**R3-5: auto-trigger keywords.**
+- Verified: `analy[sz]e` does not match "analysis".
+- Proposal: `analy(?:[sz]e|sis)`, plus a test case. The config hint lists only Chinese examples and "等", so it
+  needs no edit.

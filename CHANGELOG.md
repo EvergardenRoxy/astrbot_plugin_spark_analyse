@@ -7,6 +7,12 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## Unreleased
+
+### 变更
+
+- 开发相关：新增 `checklist.md`，用通俗的话说明各版本做了什么、怎样核对、还有哪些未验证；`handoff.md` 继续作为英文技术记录。
+
 ## 1.0.5 - 2026-10-11
 
 > 本版本由 **Claude Opus 5.5**（通过 **Claude Code**）依据维护者确认的方案完成修改。实现细节、依据与验证方式见 [handoff.md](handoff.md)。
