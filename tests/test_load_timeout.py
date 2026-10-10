@@ -1,9 +1,72 @@
+import json
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from spark_core.cache import ProfileCache
+from spark_core.profile import ProfileError
 from spark_core.session import ReportSession, LoadTimeout
 
 class LoadTests(unittest.IsolatedAsyncioTestCase):
+    async def load_with_cache(self, root, cache):
+        async def fake_download(url, path, **kwargs): path.write_bytes(b'complete-download')
+        process = AsyncMock()
+        process.returncode = 0
+        s = ReportSession(root, cache=cache)
+        try:
+            with patch('spark_core.session.download', fake_download), patch('asyncio.create_subprocess_exec', AsyncMock(return_value=process)), patch.object(s, 'wait_file', AsyncMock(return_value={'threads': []})):
+                return await s.load('https://spark.lucko.me/SyntheticReport001')
+        finally:
+            await s.close()
+
+    async def load_real_worker(self, root, raw, cache=None):
+        async def fake_download(url, path, **kwargs): path.write_bytes(raw)
+        s = ReportSession(root, parse_timeout=30, cache=cache)
+        try:
+            with patch('spark_core.session.download', fake_download):
+                return await s.load('https://spark.lucko.me/SyntheticReport001')
+        finally:
+            await s.close()
+
+    async def test_worker_rejection_reason_reaches_user(self):
+        from test_core import sample
+        d = sample()
+        d.metadata.sampler_mode = 1
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaisesRegex(ProfileError, '首版仅支持') as caught:
+                await self.load_real_worker(root, d.SerializeToString())
+        self.assertNotIn('ProfileError', str(caught.exception))
+
+    async def test_undecodable_report_has_clean_message_and_leaves_no_cache(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache = ProfileCache(Path(root)/'profiles.sqlite3')
+            with self.assertRaisesRegex(ProfileError, r'^报告解析失败（DecodeError）$'):
+                await self.load_real_worker(root, b'\xff\xff not a protobuf report', cache)
+            self.assertFalse(cache.get('SyntheticReport001', Path(root)/'copy'))
+
+    def test_worker_hides_messages_that_may_contain_paths(self):
+        worker = Path(__file__).resolve().parents[1]/'spark_core'/'worker.py'
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run([sys.executable, str(worker), root], capture_output=True, timeout=30)
+            error = json.loads((Path(root)/'ready.json').read_text(encoding='utf-8'))['error']
+        # Exact match: OSError repr-escapes backslashes, so a path check would miss Windows leaks.
+        self.assertEqual(error, 'FileNotFoundError: ')
+
+    async def test_unreadable_cache_database_falls_back_to_download(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)/'profiles.sqlite3'
+            path.write_bytes(b'this is not a sqlite database'*50)
+            self.assertEqual(await self.load_with_cache(root, ProfileCache(path)), {'threads': []})
+
+    async def test_cache_write_failure_does_not_fail_analysis(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache = ProfileCache(Path(root)/'profiles.sqlite3')
+            with patch.object(cache, 'put', side_effect=sqlite3.OperationalError('database is locked')):
+                self.assertEqual(await self.load_with_cache(root, cache), {'threads': []})
+
     async def test_download_timeout_is_labeled(self):
         with tempfile.TemporaryDirectory() as root:
             s = ReportSession(root)

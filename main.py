@@ -10,6 +10,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from .spark_core.session import ReportSession, LoadTimeout
+from .spark_core.profile import ProfileError
 from .spark_core.history import History, compare
 from .spark_core.transport import LINK
 from .spark_core.output import plain_text
@@ -17,7 +18,7 @@ from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
 
 
-@register('astrbot_plugin_spark', 'Spark Plugin Contributors', '隔离解析Spark报告并使用专用模型分析', '1.0.1')
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.2')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -108,7 +109,7 @@ class SparkPlugin(Star):
             yield event.plain_result('此会话或用户没有Spark分析权限。')
             event.stop_event()
             return
-        links = LINK.findall(text)
+        links = list(dict.fromkeys(LINK.findall(text)))
         if len(links) != 1:
             yield event.plain_result('请提供一个 https://spark.lucko.me/报告ID 。可附 server=服务器标签 problem=问题标签；比较时添加 compare。')
             event.stop_event()
@@ -228,6 +229,9 @@ class SparkPlugin(Star):
         except LoadTimeout as exc:
             logger.warning('Spark [%s] load failed: %s', trace, str(exc))
             yield event.plain_result('Spark分析未完成：'+str(exc)+'。请查看下载完成/解析开始日志定位；未生成成功审查记录。')
+        except ProfileError as exc:
+            logger.warning('Spark [%s] report rejected: %s', trace, exc)
+            yield event.plain_result('Spark分析未完成：'+str(exc)+'。未回落主LLM、未生成成功审查记录。')
         except Exception as exc:
             logger.warning('Spark analysis failed: %s', type(exc).__name__)
             yield event.plain_result('Spark分析未完成：'+type(exc).__name__+'。未回落主LLM、未生成成功审查记录。请检查链接、报告类型、体积或专用模型配置。')

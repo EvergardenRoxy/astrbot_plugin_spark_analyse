@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Executed as a file; do not depend on the plugin's dynamically assigned module name.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from spark_core.profile import Profile
+from spark_core.profile import Profile, ProfileError
 
 
 def run():
@@ -17,14 +17,14 @@ def run():
     try:
         raw_path = directory/'profile.bin'
         if raw_path.stat().st_size > 128*1024*1024:
-            raise ValueError('报告超限')
+            raise ProfileError('报告超限')
         profile = Profile(raw_path.read_bytes())
         ready = directory/'ready.tmp'
         overview = profile.overview()
         overview['evidence_pack'] = profile.evidence_pack()
         encoded = json.dumps(overview, ensure_ascii=False)
         if len(encoded.encode('utf-8')) > 128*1024:
-            raise ValueError('报告证据包超过128 KiB，拒绝发送无界上下文')
+            raise ProfileError('报告证据包超过128 KiB，拒绝发送无界上下文')
         ready.write_text(encoded, encoding='utf-8')
         ready.replace(directory/'ready.json')
         sequence = 0
@@ -44,7 +44,9 @@ def run():
             temporary.replace(target)
             sequence += 1
     except Exception as exc:
-        (directory/'ready.json').write_text(json.dumps({'error': type(exc).__name__+': '+str(exc)[:200]}), encoding='utf-8')
+        # Chat shows only plugin-authored ProfileError text; other messages can carry local paths.
+        reason = str(exc)[:200] if isinstance(exc, ProfileError) else ''
+        (directory/'ready.json').write_text(json.dumps({'error': type(exc).__name__+': '+reason}), encoding='utf-8')
         raise
 
 if __name__ == '__main__':
