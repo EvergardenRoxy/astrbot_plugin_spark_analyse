@@ -62,7 +62,7 @@ async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds,
                     received += len(chunk)
                     stats['received'] = received
                     if received > compressed_limit:
-                        raise ProfileError('下载体积超限')
+                        raise ProfileError('下载体积超限：报告文件超过 16 MiB，通常是采样时间太长。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
                     data = decoder.decompress(chunk, decoded_limit-written+1) if decoder else chunk
                     written += len(data)
                     stats['written'] = written
@@ -71,7 +71,7 @@ async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds,
                         logger.info('Spark download progress; received_bytes=%s decoded_bytes=%s elapsed=%.1fs', received, written, now-stats['started'])
                         last_progress = now
                     if written > decoded_limit or (decoder and decoder.unconsumed_tail):
-                        raise ProfileError('解压体积超限')
+                        raise ProfileError('解压体积超限：报告解压后超过 128 MiB，通常是采样时间太长（例如连续采样数小时）。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
                     output.write(data)
                 if decoder and (not decoder.eof or decoder.unused_data):
                     raise ProfileError('gzip流截断或存在额外数据')

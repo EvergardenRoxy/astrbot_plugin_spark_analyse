@@ -150,6 +150,65 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(pack['threads']), 4)
         self.assertEqual(pack['omitted_threads'], 3)
 
+    def test_world_statistics_are_bounded_summaries(self):
+        d = sample()
+        w = d.metadata.platform_statistics.world
+        w.total_entities = 40
+        for i in range(15):
+            w.entity_counts[f'mod:type{i:02d}'] = i + 1
+        world = w.worlds.add(name='overworld', total_entities=30)
+        region = world.regions.add(total_entities=30)
+        region.chunks.add(x=2, z=-3, total_entities=20, entity_counts={'minecraft:item': 18, 'minecraft:bat': 2})
+        region.chunks.add(x=0, z=0, total_entities=10, entity_counts={'minecraft:cow': 10})
+        w.worlds.add(name='the_nether', total_entities=10)
+        w.game_rules.add(name='randomTickSpeed', default_value='3').world_values['overworld'] = '30'
+        w.game_rules.add(name='doMobSpawning', default_value='true').world_values['overworld'] = 'true'
+        w.game_rules.add(name='keepInventory', default_value='false').world_values['overworld'] = 'true'
+        stats = Profile(d.SerializeToString()).overview()['world']
+        self.assertEqual(stats['total_entities'], 40)
+        self.assertEqual(stats['entity_type_count'], 15)
+        self.assertEqual(len(stats['entity_types']), 10)
+        self.assertEqual(stats['entity_types'][0], ['mod:type14', 15])
+        self.assertEqual(stats['dimensions'], [{'name': 'overworld', 'entities': 30}, {'name': 'the_nether', 'entities': 10}])
+        # Chunk coordinates plus the block position of the chunk centre, for checking in game.
+        self.assertEqual(stats['busiest_chunks'][0], {'dimension': 'overworld', 'chunk_x': 2, 'chunk_z': -3,
+                                                      'block_x': 40, 'block_z': -40, 'entities': 20,
+                                                      'entity_types': [['minecraft:item', 18], ['minecraft:bat', 2]]})
+        # Only performance-relevant rules that differ from their default.
+        self.assertEqual(stats['changed_game_rules'], {'randomTickSpeed': {'default': '3', 'worlds': {'overworld': '30'}}})
+        self.assertIsNone(Profile(sample().SerializeToString()).overview()['world'])
+
+    def test_window_health_reports_entity_counts(self):
+        d = sample()
+        ws = d.time_window_statistics[10]
+        ws.players, ws.entities, ws.tile_entities, ws.chunks = 3, 316, -1, 7193
+        row = Profile(d.SerializeToString()).overview()['window_health'][0]
+        # Spark writes -1 when it could not count; that is unknown, not a count.
+        self.assertEqual((row['players'], row['entities'], row['tile_entities'], row['chunks']), (3, 316, None, 7193))
+
+    def test_platform_brand_is_reported(self):
+        d = sample()
+        d.metadata.platform_metadata.brand = 'Folia'
+        self.assertEqual(Profile(d.SerializeToString()).overview()['platform']['brand'], 'Folia')
+        self.assertEqual(Profile(sample().SerializeToString()).overview()['platform']['brand'], '')
+
+    def test_wait_time_counts_outermost_wait_frames(self):
+        d = sample()
+        del d.threads[:]
+        t = d.threads.add(name='Server thread', times=[100, 100], children_refs=[0, 3])
+        t.children.add(class_name='net.minecraft.server.MinecraftServer', method_name='runServer', times=[60, 60], children_refs=[1])
+        t.children.add(class_name='net.minecraft.server.MinecraftServer', method_name='waitUntilNextTick', times=[60, 60], children_refs=[2])
+        t.children.add(class_name='jdk.internal.misc.Unsafe', method_name='park', times=[60, 60])
+        t.children.add(class_name='net.minecraft.server.MinecraftServer', method_name='tickServer', times=[40, 40], children_refs=[4, 5])
+        t.children.add(class_name='java.lang.Object', method_name='wait', times=[10, 10], children_refs=[6])
+        t.children.add(class_name='net.minecraft.world.level.Level', method_name='tickBlockEntities', times=[30, 30])
+        t.children.add(class_name='jdk.internal.misc.Unsafe', method_name='park', times=[10, 10])
+        thread = Profile(d.SerializeToString()).evidence_pack()['threads'][0]
+        # Every wait counts once at its outermost wait frame; method names decide nothing else, so the result is
+        # the same on obfuscated (Forge 1.20.1) or non-vanilla (Folia) call trees.
+        self.assertEqual(thread['wait_ms'], 140)
+        self.assertNotIn('idle_between_ticks_ms', thread)
+
     def test_runtime_jvm_and_heuristic_identity(self):
         d = sample()
         system = d.metadata.system_statistics

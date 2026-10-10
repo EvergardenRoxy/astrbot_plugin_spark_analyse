@@ -18,9 +18,10 @@ from .spark_core.transport import LINK
 from .spark_core.output import plain_text
 from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
+from .spark_core.briefing import is_legacy_reply, reply_requirements, system_prompt, user_payload
 
 
-@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.4')
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.5')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -34,6 +35,7 @@ class SparkPlugin(Star):
         self.background_tasks = set()
         self.history = History(self.root/'history.sqlite3', bool(config.get('history_enabled', False)))
         self.policy = Path(__file__).with_name('analysis_policy.md').read_text(encoding='utf-8')
+        self.guide = Path(__file__).with_name('diagnosis_guide.md').read_text(encoding='utf-8')
         self.default_reply_prompt = Path(__file__).with_name('reply_prompt.txt').read_text(encoding='utf-8')
         self.active = set()
         self.inflight_reports = set()
@@ -49,6 +51,18 @@ class SparkPlugin(Star):
             await asyncio.to_thread(self.history.purge, 1)
         except Exception as exc:
             logger.warning('Spark history purge failed: %s', type(exc).__name__)
+        # A saved reply prompt equal to an old shipped default was never customised: switch it to the current
+        # default and save, so the config page shows the text actually used. Analysis applies the same rule
+        # even if saving fails.
+        try:
+            if is_legacy_reply(self.config.get('analysis_prompt')):
+                self.config['analysis_prompt'] = self.default_reply_prompt
+                save = getattr(self.config, 'save_config', None)
+                if save:
+                    save()
+                logger.info('Spark replaced the previous default reply prompt with the current one')
+        except Exception as exc:
+            logger.warning('Spark reply prompt update failed: %s', type(exc).__name__)
 
     def owner(self, event):
         return hashlib.sha256((event.unified_msg_origin+'\0'+event.get_sender_id()).encode()).hexdigest()
@@ -214,15 +228,19 @@ class SparkPlugin(Star):
                     logger.debug('Spark [%s] query complete; rows=%s error=%s', trace, len(answer.get('rows', [])), bool(answer.get('error')))
                     return json.dumps(answer, ensure_ascii=False)
 
-                tool = FunctionTool(name='spark_query', description='只读查询本次已加载报告；hotspots按self排序，children按inclusive排序；callers还原路径，search字面搜索。thread/node/window从概览或先前结果选取。',
+                tool = FunctionTool(name='spark_query', description='只读查询本次报告的调用树，用于补充证据。triage、evidence_pack 和 world 已足够回答时不要调用。每页最多 20 行，next_offset 不为空表示还有下一页。',
                     parameters={'type':'object','properties':{
-                        'view':{'type':'string','enum':['hotspots','children','callers','search']},
-                        'thread':{'type':'integer'},'node':{'type':'integer'},
-                        'window':{'type':'integer'},'search':{'type':'string','maxLength':120},
-                        'offset':{'type':'integer','minimum':0,'maximum':1000}},'required':['view','thread']}, handler=query)
-                prompt = json.dumps({'user_observation': text[:2000], 'overview': overview,
-                                     'history_comparison': comparison,
-                                     'previous_review_untrusted': history[0]['result'][:6000] if comparison else None}, ensure_ascii=False)
+                        'view':{'type':'string','enum':['hotspots','children','callers','search'],
+                                'description':'hotspots：按自身耗时（self）列出热点；children：按含子调用耗时（inclusive）列出 node 的子节点；callers：还原 node 到线程根的调用路径；search：按方法名字面搜索'},
+                        'thread':{'type':'integer','description':'线程 ID，取自 overview.threads 或 evidence_pack；服务端主线程通常名为 Server thread'},
+                        'node':{'type':'integer','description':'节点 ID，取自之前的结果；children 时 -1 表示线程根'},
+                        'window':{'type':'integer','description':'时间窗口 ID，取自 overview.windows；不填表示全部窗口'},
+                        'search':{'type':'string','maxLength':120,'description':'view=search 时要查找的方法名片段（字面匹配）'},
+                        'offset':{'type':'integer','minimum':0,'maximum':1000,'description':'分页起点，取上一页的 next_offset'}},
+                        'required':['view','thread']}, handler=query)
+                prompt = user_payload(text, overview, comparison, history[0]['result'] if comparison else None)
+                instructions = system_prompt(self.policy, self.guide,
+                                             reply_requirements(self.config.get('analysis_prompt', ''), self.default_reply_prompt))
                 providers = list(dict.fromkeys([provider] + [
                     str(item['provider_id']).strip()
                     for item in self.config.get('fallback_providers', [])
@@ -234,7 +252,7 @@ class SparkPlugin(Star):
                         logger.info('Spark [%s] model start; attempt=%s/%s provider=%s', trace, attempt+1, len(providers), provider_id)
                         model_task = asyncio.create_task(self.context.tool_loop_agent(
                             event=event, chat_provider_id=provider_id, prompt=prompt,
-                            system_prompt=self.policy+'\n\n回复要求：\n'+(str(self.config.get('analysis_prompt', '')).strip() or self.default_reply_prompt), tools=ToolSet([tool]), max_steps=10,
+                            system_prompt=instructions, tools=ToolSet([tool]), max_steps=10,
                             tool_call_timeout=35))
                         try:
                             for tick in range(10):
@@ -255,7 +273,11 @@ class SparkPlugin(Star):
                         result = response.completion_text
                         if not result or not result.strip():
                             raise ValueError('分析模型没有返回文字结论')
-                        logger.info('Spark [%s] model success; provider=%s queries=%s', trace, provider_id, calls)
+                        # The model name the provider reports serving, when it returns one (OpenAI-style responses do).
+                        # Lets the operator spot a provider silently routing to a weaker model.
+                        served = getattr(getattr(response, 'raw_completion', None), 'model', None)
+                        logger.info('Spark [%s] model success; provider=%s served_model=%s queries=%s',
+                                    trace, provider_id, str(served)[:80] if served else 'unknown', calls)
                         break
                     except asyncio.CancelledError:
                         raise
@@ -270,8 +292,11 @@ class SparkPlugin(Star):
                     # The model already answered; a failed history write must not discard the result.
                     history_id = None
                     logger.warning('Spark [%s] history save failed: %s', trace, type(exc).__name__)
-                suffix = f'\n历史记录：{history_id}（server={server or "未标记"}，problem={problem or "未标记"}）' if history_id else ''
-                logger.info('Spark [%s] history saved=%s; sending final result', trace, bool(history_id))
+                # compare finds the previous record by tags, so repeat the ones the user typed.
+                tags = ' '.join(m.group(0).strip() for m in (server_match, problem_match) if m)
+                suffix = (f'\n（已保存本次结果；之后再次分析时加上 compare{"，并带上 "+tags if tags else ""}，可与本次对比。）'
+                          if history_id else '')
+                logger.info('Spark [%s] history saved=%s; sending final result', trace, history_id or False)
                 yield event.plain_result(plain_text(result)+suffix)
                 logger.info('Spark [%s] result delivered', trace)
         except asyncio.CancelledError:

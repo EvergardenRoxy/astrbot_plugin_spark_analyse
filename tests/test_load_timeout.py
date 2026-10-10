@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -151,3 +152,47 @@ class WorkerLifecycleTests(unittest.TestCase):
             if proc.poll() is None: proc.kill()
             proc.wait()
             shutil.rmtree(root, ignore_errors=True)
+
+
+class WorkerImportPathTests(unittest.TestCase):
+    HERE = os.path.realpath(os.path.join(tempfile.gettempdir(), 'plugin', 'spark_core'))
+
+    def test_script_directory_is_replaced(self):
+        # Keeps spark_core/profile.py from shadowing the stdlib `profile` module.
+        from spark_core.worker import import_path
+        root = os.path.dirname(self.HERE)
+        self.assertEqual(import_path([self.HERE, '/usr/lib/python3.zip'], self.HERE), [root, '/usr/lib/python3.zip'])
+
+    def test_safe_path_entries_are_kept(self):
+        # PYTHONSAFEPATH / -P / a ._pth file: entry 0 is PYTHONPATH or the stdlib zip, not the script directory.
+        from spark_core.worker import import_path
+        root = os.path.dirname(self.HERE)
+        self.assertEqual(import_path(['/deps', '/usr/lib/python3.zip'], self.HERE), [root, '/deps', '/usr/lib/python3.zip'])
+
+    @unittest.skipUnless(sys.version_info >= (3, 11), '-P needs Python 3.11+')
+    def test_worker_runs_with_dependencies_only_on_pythonpath(self):
+        # -S drops site-packages and -P drops the script directory, so protobuf is reachable only through
+        # PYTHONPATH, which is then sys.path[0]. Overwriting that entry made the worker fail to import.
+        import shutil, site, time
+        from test_core import sample
+        worker = Path(__file__).resolve().parents[1]/'spark_core'/'worker.py'
+        paths = [*site.getsitepackages(), site.getusersitepackages()]
+        root = tempfile.mkdtemp()
+        (Path(root)/'profile.bin').write_bytes(sample().SerializeToString())
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
+        env.pop('PYTHONSAFEPATH', None)
+        proc = subprocess.Popen([sys.executable, '-S', '-P', str(worker), root], env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 30
+            while not (Path(root)/'ready.json').exists() and proc.poll() is None and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertTrue((Path(root)/'ready.json').exists(), 'worker exited before writing ready.json')
+            self.assertNotIn('error', json.loads((Path(root)/'ready.json').read_text(encoding='utf-8')))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
