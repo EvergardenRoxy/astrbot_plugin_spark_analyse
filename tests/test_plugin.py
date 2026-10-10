@@ -18,7 +18,9 @@ class Event:
     def get_sender_id(self): return 'alice'
     def plain_result(self, text): return text
     stopped = False
-    def is_admin(self): return getattr(self, 'admin', False)
+    # Default access is admin_only, so the test user is an admin unless a test says otherwise.
+    admin = True
+    def is_admin(self): return self.admin
     def stop_event(self): self.stopped = True
 
 class FakeSession:
@@ -151,6 +153,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_access_modes_and_all_entry_points(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'access_mode':'admin_only'})
         event = Event()
+        event.admin = False
         self.assertFalse(plugin.allowed(event))
         event.admin = True
         self.assertTrue(plugin.allowed(event))
@@ -165,6 +168,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.config['access_mode'] = 'admin_only'
         def fresh():
             event = Event()
+            event.admin = False
             event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
             return event
         # Auto analysis ignores non-permitted users so other handlers still see the message.
@@ -174,6 +178,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         for handler in (plugin.spark_command, lambda e: plugin.analyze_tool(e, 'https://spark.lucko.me/SyntheticReport001')):
             results = [r async for r in handler(fresh())]
             self.assertIn('权限', results[0])
+
+    async def test_default_access_is_admin_only(self):
+        # Code fallback and schema default must agree; AstrBot fills missing keys from the schema.
+        schema = __import__('json').loads((ROOT/'_conf_schema.json').read_text(encoding='utf-8'))
+        self.assertEqual(schema['access_mode']['default'], 'admin_only')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        member = Event()
+        member.admin = False
+        self.assertFalse(plugin.allowed(member))
+        self.assertTrue(plugin.allowed(Event()))
 
     async def test_duplicate_inflight_report_is_quiet(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
@@ -311,6 +325,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             db.execute("UPDATE reviews SET created=0 WHERE rowid=1")
         db.close()
         disabled = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        await disabled.initialize()
         with sqlite3.connect(path) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 1)
         db.close()
@@ -324,8 +339,58 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_corrupt_history_database_does_not_block_loading(self):
         (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
-        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        # AstrBot awaits initialize() inside its plugin-load try: anything escaping fails the load.
+        await plugin.initialize()
         self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_locked_history_does_not_stall_loading(self):
+        path = Path(self.temp.name)/'history.sqlite3'
+        holder = sqlite3.connect(path)
+        holder.execute('CREATE TABLE reviews (id TEXT PRIMARY KEY, owner TEXT, server TEXT, problem TEXT, created REAL, overview TEXT, result TEXT)')
+        holder.commit()
+        holder.execute('BEGIN EXCLUSIVE')
+        ticks = 0
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+        running = asyncio.create_task(ticker())
+        try:
+            started = asyncio.get_running_loop().time()
+            plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+            await plugin.initialize()
+            elapsed = asyncio.get_running_loop().time() - started
+        finally:
+            running.cancel()
+            holder.rollback()
+            holder.close()
+        # Bounded wait for the lock, and the event loop kept running meanwhile.
+        self.assertLess(elapsed, 3)
+        self.assertGreater(ticks, 10)
+        self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_forget_reports_unreadable_history(self):
+        (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event = Event()
+        event.message_str = '/spark forget'
+        result = [r async for r in plugin.spark_command(event)]
+        self.assertEqual(len(result), 1)
+        self.assertIn('未清除', result[0])
+        self.assertIn('管理员', result[0])
+        self.assertTrue(event.stopped)
+        self.assertTrue(any('forget failed' in item[0] for item in self.logs))
+
+    async def test_forget_reports_busy_history(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event = Event()
+        event.message_str = '/spark forget'
+        with patch.object(plugin.history, 'delete', side_effect=sqlite3.OperationalError('database is locked')):
+            result = [r async for r in plugin.spark_command(event)]
+        self.assertIn('未清除', result[0])
+        self.assertIn('稍后', result[0])
 
     async def test_history_save_failure_keeps_result(self):
         async def agent(**kwargs): return types.SimpleNamespace(completion_text='模型结论')

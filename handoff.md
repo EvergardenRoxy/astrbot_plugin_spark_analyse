@@ -12,8 +12,8 @@ CHANGELOG for that).
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.3 (see §7). Changes are under `## 1.0.3 - 2026-10-11` in `CHANGELOG.md`. |
-| Tests | 51 -> 67, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Version | 1.0.4 (§9). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`. |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -31,7 +31,10 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `4a1fd87` | Config page rewrite and reorder (`_conf_schema.json`, README) |
 | `9c2099e` | This file rewritten as an English engineering record |
 | `c47cc0f` | Maintainer's own README edit (author note); not touched afterwards |
-| last commit | Release prep for 1.0.3 (§7) |
+| `c4c1311` | Release prep for 1.0.3 (§7); merged into `main` as PR #2 |
+| `33b147c` | Review round 2 items 3 and 4: default `admin_only`, trimmed 1.0.3 CHANGELOG (§8) |
+| `8090d18` | Review round 2 item 2: `/spark forget` guard, startup purge in `initialize()` (§8) |
+| last commit | Release prep for 1.0.4 (§9). Branch `v1.0.4` holds the same tree as one commit on `main`. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -148,8 +151,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 - `History.purge()` returns 0 if the file is absent (never creates it); otherwise it opens `connect()`
   (which runs the expiry `DELETE`) and returns `total_changes`.
 - `History.delete()` is gated on the file existing, not on `enabled`, so `/spark forget` works when disabled.
-- `__init__` calls `purge()` synchronously (`__init__` cannot await; the DB is small), wrapped in
-  `except (sqlite3.Error, OSError)`. A corrupt DB must not block plugin load.
+- The startup purge runs in `initialize()` (originally in `__init__`; moved in review round 2, see §8):
+  `await asyncio.to_thread(self.history.purge, 1)` inside `except Exception`. A corrupt or locked DB must
+  never fail or stall plugin load.
 - **Limitation:** while disabled, expiry only runs at load or reload.
 - **Tests:** `test_history_retention_while_disabled`, `test_history_retention_and_forget_while_disabled`,
   `test_corrupt_history_database_does_not_block_loading`. The existing "no DB file when disabled" assertion
@@ -173,6 +177,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
   field except `description`, `hint`, `obvious_hint`, `labels` and `templates` is identical. `templates`
   was checked separately (only its display text changed). So **keys, types, defaults, sliders,
   `_special` and the default `analysis_prompt` are unchanged**. Existing user configs are unaffected.
+  (Superseded for one field in review round 2: `access_mode` default is now `admin_only`, see §8.)
 - **Order:** JSON key order is the UI order. Groups: model -> access -> trigger -> reply -> data -> network.
 - **`labels` on `access_mode`** and **`obvious_hint` on `analysis_provider_id`:** support confirmed in the
   4.28.2 dashboard bundle (`dashboard/dist/assets/ProviderSelectMenu-*.js`:
@@ -190,7 +195,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 - Deleted `tools/release_descriptions.py`: its assert failed against the current schema, and it would have
   overwritten newer text.
 - `tools/package_plugin.py` reads `^version:` from `metadata.yaml` (regex; no PyYAML). The output name
-  follows it (`astrbot_plugin_spark-v1.0.3.zip` now). The zip uses an explicit file list:
+  follows it (for example `astrbot_plugin_spark-v1.0.4.zip`). The zip uses an explicit file list:
   `handoff.md` and `CHANGELOG.md` are not packaged (`README.md`,
   `THIRD_PARTY.md` and `analysis_policy.md` are).
 - `test_version_is_consistent`: `metadata.yaml` (leading `v` stripped) == the `@register` literal == the
@@ -212,14 +217,16 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | X1 | `test_close_removes_directory_when_worker_wait_fails`, `test_terminate_closes_every_session` |
 | F6 | `test_link_boundaries` |
 | F3 | `test_history_retention_while_disabled`, `test_history_retention_and_forget_while_disabled`, `test_corrupt_history_database_does_not_block_loading` |
+| Review item 2 (§8) | `test_locked_history_does_not_stall_loading`, `test_forget_reports_unreadable_history`, `test_forget_reports_busy_history` |
 | X3 / S1 | `test_compare_tolerates_older_overview_shape`, `test_history_lookup_failure_skips_comparison`, `test_history_save_failure_keeps_result` |
 | F8 | `test_version_is_consistent` |
+| Default access (§8) | `test_default_access_is_admin_only` |
 
 ## 4. How to re-verify
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 67 OK
+python -m unittest discover -s tests        # expect 71 OK
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
@@ -234,7 +241,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 ## 5. Open items
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
-- Merge `v1.0.3` into `main`: no PR was created; that is the maintainer's call.
+- Merge `v1.0.4` into `main`: no PR was created by the agent; that is the maintainer's call.
+- Review round 2 item 1 (`worker.py` `sys.path` handling under `PYTHONSAFEPATH`): proposed in §8, not implemented.
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
@@ -249,7 +257,10 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   compressed / 128 MiB decoded, node/depth limits, worker `RLIMIT_AS`.
 - Never call `stop_event()` on the tool path. Never return text from `analyze_tool`'s success path without
   re-reading §2.2, since doing so brings back the extra main-model call.
-- Config schema: keys, types and defaults are a compatibility surface for existing installs. Change only display fields.
+- Config schema: keys and types are a compatibility surface for existing installs. A default change only reaches
+  new installs (AstrBot fills missing keys only), so treat it as a product decision and note it in CHANGELOG.
+- Default access is `admin_only`. The code fallback (`config.get('access_mode', 'admin_only')`, 3 places in
+  `main.py`) must match the schema default; `test_default_access_is_admin_only` checks both.
 
 ## 7. Release prep for 1.0.3
 
@@ -271,3 +282,75 @@ then created at the same commit (the naming follows the existing `v1.0.2` releas
   CHANGELOG section that points here. The model was confirmed from the session metadata (configured and
   last-served model both Opus 5.5) before writing it. The maintainer's own "作者注" block in README
   (`c47cc0f`) was left verbatim.
+
+## 8. Review round 2 (after release prep)
+
+Maintainer review of the branch raised four items. Items 3, 4 and then 2 were implemented; item 1 is
+proposed only, pending the maintainer's go-ahead. `v1.0.3` had already been merged (PR #2) when this round
+started, so this round ships as 1.0.4 (§9).
+
+- **Item 4, default access (implemented):** the `access_mode` default changed from `all` to `admin_only`
+  (maintainer decision, not open for discussion). Changed in the schema default, the hint, the 3 code
+  fallbacks in `main.py`, and README.
+  - Existing installs keep their saved value. Verified in `AstrBotConfig.check_config_integrity` (4.28.2 and
+    4.16.0): only missing keys get defaults.
+  - Test double: `Event.admin` now defaults to `True`. Under the new default, an admin is the minimal working
+    user, so tests unrelated to permissions keep passing unchanged. Permission tests set `admin = False`
+    explicitly. Before the code change, the full suite was run with the new test double: only the new default
+    test failed.
+  - `auto_analyze` stays on by default; with `admin_only` it only fires for admins, and is silent for others (F4).
+- **Item 3, CHANGELOG (implemented):** the 1.0.3 section was cut from ~7.8 KB to ~2.8 KB of user-facing
+  bullets. Nothing that was dropped is lost: AstrBot internals, version bisect, hot-reload note and per-test
+  lists all live in §2-§3 of this file.
+- **Item 1, `worker.py` `sys.path[0] = root` is unconditional (proposed):** with `PYTHONSAFEPATH=1` (or `-I`),
+  `sys.path[0]` is not the script dir but a `PYTHONPATH` entry or the stdlib zip, and gets overwritten.
+- **Item 2, `/spark forget` error guard and sqlite timeouts (implemented):**
+  - **Reproduced first:** `/spark forget` on a corrupt file raised an uncaught `DatabaseError`. With another
+    connection holding `BEGIN EXCLUSIVE`, plugin construction blocked for 5.01 s (sqlite's default busy
+    timeout), and asyncio reported the event loop blocked for 5.015 s.
+  - **Startup purge** moved from `__init__` to `async def initialize()`, run via `asyncio.to_thread` with a 1 s
+    lock timeout, inside `except Exception` with a warning log.
+    - Constraints: AstrBot awaits `star_cls.initialize()` inside the plugin-load `try` (`star_manager.py:1420`
+      in 4.28.2, `:656` in 4.16.0), so anything escaping fails the plugin load. `Star.initialize` is an empty
+      no-op in both versions, so there is no `super()` call to make.
+    - Why 1 s: this plugin is the only writer of `history.sqlite3`. The realistic contention is AstrBot's
+      reload on every config save, where the old instance may be finishing a single-row write (milliseconds).
+      A lock held longer than 1 s means an external holder, where waiting does not help. Plugins load
+      sequentially, so each second here delays every later plugin. A skipped purge is retried on the next load.
+  - **`History.connect(timeout=5)` / `purge(timeout=5)`:** the timeout is now an explicit parameter. All
+    other callers (`list`, `save`, `delete`) keep 5 s, the sqlite default. They run in worker threads, so the
+    loop is not blocked, and the user is waiting for the result.
+  - **`/spark forget`** catches `(sqlite3.Error, OSError)`, logs only the type name, and replies with one of
+    two messages. Both state that nothing was deleted, which is accurate because the delete is a single transaction:
+    - `OperationalError` whose message contains `locked` -> "历史数据库正忙，记录未清除，请稍后再试。"
+      Verified once against a real lock (sqlite's text is "database is locked").
+    - Anything else (corrupt file, disk or permission error) -> "历史数据库无法读取，记录未清除，请联系管理员检查历史数据库文件。"
+    - `str(exc)` is only used to classify, never shown in chat (the path-leak rule still holds).
+  - The report cache DB needed no change: it does not touch the DB at init, and it only runs in worker
+    threads (30 s timeout).
+  - **Proposal for item 1 (not implemented):** replace `sys.path[0]` only when it resolves to the script
+    directory, otherwise `insert(0, root)`. Reproduced in a scratch copy: under `PYTHONSAFEPATH=1` the
+    current code overwrote a `PYTHONPATH` entry; the conditional version kept it, and resolved stdlib
+    `profile` in both modes. Suggested tests: put the decision in a function that is only called when the
+    worker runs as a script, so importing it does not touch the test process's `sys.path`; unit-test both
+    branches; add one subprocess smoke test with `PYTHONSAFEPATH=1`.
+
+## 9. Release prep for 1.0.4
+
+Requested by the maintainer after review round 2. `main` already contained 1.0.3 (`9a9bad2`, PR #2), so 1.0.4
+is exactly the round-2 work (`33b147c`, `8090d18`) plus this prep.
+
+- **Version** 1.0.3 -> 1.0.4 in `metadata.yaml`, the `@register(...)` literal and a new CHANGELOG heading
+  `## 1.0.4 - 2026-10-11` (maintainer's local date, KST). `test_version_is_consistent` checks all three.
+- **CHANGELOG split:** round-2 items had been appended to the 1.0.3 section while 1.0.3 was still unmerged.
+  They were moved into the 1.0.4 section: default `admin_only`, the `/spark forget` guard, and the startup
+  stall. The 1.0.3 test count was restored to 51 -> 67, the count at `c4c1311`; 1.0.4 records 67 -> 71.
+  The 1.0.3 section stays in its trimmed, user-facing form, as review item 3 asked.
+- **AI statement** (README and CHANGELOG header) now says Opus 5.5 worked on 1.0.3 and 1.0.4.
+- **Release branch `v1.0.4`:** created from `origin/main` (`9a9bad2`) with a single commit whose tree is
+  identical to the tip of `claude/keen-bohr-d01us1` (built with `git read-tree -u --reset`; verified with an
+  empty `git diff`). The PR diff therefore contains only the 1.0.4 changes. The per-change history stays on
+  `claude/keen-bohr-d01us1` and in this file. The file set is unchanged from 1.0.3: no files were added or removed.
+- **Note for the next round:** once `v1.0.4` is merged, `claude/keen-bohr-d01us1` is not an ancestor of
+  `main` (the release commit is a squash). Restart the work branch from `main` before new work, so later
+  diffs do not repeat these commits.

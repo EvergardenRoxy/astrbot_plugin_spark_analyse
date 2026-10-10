@@ -30,13 +30,13 @@
   "access_mode": {
     "type": "string",
     "description": "谁可以使用",
-    "default": "all",
+    "default": "admin_only",
     "options": [
       "admin_only",
       "admin_and_whitelist",
       "all"
     ],
-    "hint": "“管理员”指 AstrBot 管理员，不是 QQ 群管理员。选择“管理员和指定用户”时，在下一项填写用户。",
+    "hint": "默认“仅管理员”。“管理员”指 AstrBot 管理员，不是 QQ 群管理员。选择“管理员和指定用户”时，在下一项填写用户。",
     "labels": [
       "仅管理员",
       "管理员和指定用户",
