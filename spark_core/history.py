@@ -11,8 +11,9 @@ class History:
         self.path, self.enabled, self.days = path, enabled, retention_days
 
     @contextmanager
-    def connect(self):
-        db = sqlite3.connect(self.path)
+    def connect(self, timeout=5):
+        # timeout: seconds to wait for another connection's lock before raising "database is locked".
+        db = sqlite3.connect(self.path, timeout=timeout)
         try:
             with db:
                 db.execute('CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, owner TEXT, server TEXT, problem TEXT, created REAL, overview TEXT, result TEXT)')
@@ -39,11 +40,11 @@ class History:
                               (owner, server, problem, problem)).fetchall()
         return [{'id': r[0], 'created': r[1], 'overview': json.loads(r[2]), 'result': r[3]} for r in rows]
 
-    def purge(self):
+    def purge(self, timeout=5):
         # Retention applies even while saving is disabled; never creates the database.
         if not self.path.exists():
             return 0
-        with self.connect() as db:
+        with self.connect(timeout) as db:
             return db.total_changes
 
     def delete(self, owner):

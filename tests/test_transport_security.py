@@ -41,6 +41,11 @@ class TransportSecurityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ProfileError, '解压体积超限'):
             await self.fetch(gzip.compress(b'x'*100000), {'Content-Type':'application/x-spark-sampler', 'Content-Encoding':'gzip'}, decoded_limit=1000)
 
+    async def test_oversized_report_message_explains_the_remedy(self):
+        # Long profiles (hours, many time windows) exceed the limit; tell the user how to get a usable report.
+        with self.assertRaisesRegex(ProfileError, r'--timeout 300'):
+            await self.fetch(gzip.compress(b'x'*100000), {'Content-Type':'application/x-spark-sampler', 'Content-Encoding':'gzip'}, decoded_limit=1000)
+
     async def test_truncated_and_concatenated_gzip_rejected(self):
         raw = gzip.compress(b'synthetic')
         for payload in (raw[:-4], raw+raw):

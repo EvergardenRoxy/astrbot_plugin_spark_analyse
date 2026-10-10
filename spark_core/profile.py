@@ -1,5 +1,6 @@
 """Validated, bounded Spark execution-profile queries, independent of AstrBot."""
 import hashlib
+import heapq
 import math
 from .proto.spark_sampler_pb2 import SamplerData
 
@@ -12,6 +13,20 @@ class ProfileError(ValueError):
 def present_number(message, name):
     # proto3 scalar zero has no presence; do not invent a measured zero.
     return getattr(message, name) if name in {f.name for f, _ in message.ListFields()} else None
+
+
+def present_count(message, name):
+    # Spark writes -1 when it could not count; that is unknown, not a count.
+    value = present_number(message, name)
+    return value if value is None or value >= 0 else None
+
+
+# JDK frames where a thread is parked rather than running. Counted once at the outermost frame, so native
+# frames below them (async-profiler) are included.
+WAIT_FRAMES = frozenset({'jdk.internal.misc.Unsafe.park', 'sun.misc.Unsafe.park', 'java.lang.Thread.sleep',
+                         'java.lang.Thread.sleep0', 'java.lang.Thread.sleepNanos0', 'java.lang.Object.wait',
+                         'java.lang.Object.wait0'})
+PERFORMANCE_GAME_RULES = ('randomTickSpeed', 'doMobSpawning', 'maxEntityCramming', 'spawnChunkRadius')
 
 
 class Profile:
@@ -31,7 +46,7 @@ class Profile:
         for t in self.data.threads:
             count += len(t.children)
             if count > max_nodes:
-                raise ProfileError('调用节点超过限额')
+                raise ProfileError('调用节点超过限额：报告的调用树超过 100 万个节点，通常是采样时间太长。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
             parents = [-2] * len(t.children)
             for i, n in [(-1, t), *enumerate(t.children)]:
                 if len(n.times) != len(self.windows) or any(not math.isfinite(x) or x < 0 for x in n.times):
@@ -129,6 +144,7 @@ class Profile:
                 'runtime': self.runtime_metadata(),
                 'platform': {'type': p.type, 'name': p.name[:240], 'version': p.version[:240],
                              'minecraft': p.minecraft_version[:120], 'spark': p.spark_version[:120],
+                             'brand': p.brand[:120],
                              'data_version': p.spark_data_version},
                 'sampling': {'mode': 'execution', 'engine': m.sampler_engine,
                              'interval_us': m.interval, 'start_ms': m.start_time,
@@ -148,13 +164,65 @@ class Profile:
                 'window_health': [{'window': w, 'tps': present_number(s, 'tps'),
                                    'mspt_median': present_number(s, 'mspt_median'),
                                    'mspt_max': present_number(s, 'mspt_max'),
-                                   'players': present_number(s, 'players'),
-                                   'chunks': present_number(s, 'chunks')}
+                                   'players': present_count(s, 'players'),
+                                   'entities': present_count(s, 'entities'),
+                                   'tile_entities': present_count(s, 'tile_entities'),
+                                   'chunks': present_count(s, 'chunks')}
                                   for w, s in sorted(self.data.time_window_statistics.items())][:120],
+                'world': self.world_statistics(),
                 'platform_truncated': any(len(value) > limit for value, limit in (
-                     (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120))),
+                     (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120),
+                     (p.brand, 120))),
                  'limitations': ['scalar absent/zero reported as null', 'no automatic obfuscation mapping',
                                 'class source only; not mod causality', 'thread share is not CPU share']}
+
+    def world_statistics(self):
+        """Entity counts Spark stores with the report (absent on older reports); bounded summaries only."""
+        stats = self.data.metadata.platform_statistics
+        if not stats.HasField('world'):
+            return None
+        w = stats.world
+        def top(counts, n):
+            return [[str(k)[:80], v] for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
+        chunks = ((world.name, c) for world in w.worlds for region in world.regions for c in region.chunks)
+        busiest = heapq.nlargest(5, chunks, key=lambda item: item[1].total_entities)
+        rules = {}
+        for rule in w.game_rules:
+            if rule.name in PERFORMANCE_GAME_RULES:
+                changed = {k[:80]: v[:40] for k, v in sorted(rule.world_values.items()) if v != rule.default_value}
+                if changed:
+                    rules[rule.name] = {'default': rule.default_value[:40], 'worlds': dict(list(changed.items())[:16])}
+        return {'total_entities': present_count(w, 'total_entities'),
+                'entity_type_count': len(w.entity_counts), 'entity_types': top(w.entity_counts, 10),
+                'dimensions': [{'name': world.name[:80], 'entities': world.total_entities}
+                               for world in sorted(w.worlds, key=lambda x: -x.total_entities)[:12]],
+                'dimension_count': len(w.worlds),
+                'busiest_chunks': [{'dimension': name[:80], 'chunk_x': c.x, 'chunk_z': c.z,
+                                    'block_x': c.x*16+8, 'block_z': c.z*16+8, 'entities': c.total_entities,
+                                    'entity_types': top(c.entity_counts, 3)} for name, c in busiest],
+                'changed_game_rules': rules}
+
+    def waiting(self, thread):
+        """Sampled ms the thread spent parked. Whether that is spare time between ticks or a stall inside a tick
+        is judged from MSPT (briefing.triage), not from method names, which differ across platforms and versions."""
+        t = self.data.threads[thread]
+        parents = self.parents[thread]
+        inside = [None] * len(t.children)
+        total = 0.0
+        for start in range(len(t.children)):
+            chain, i = [], start
+            while i != -1 and inside[i] is None:
+                chain.append(i)
+                i = parents[i]
+            waiting = inside[i] if i != -1 else False
+            for j in reversed(chain):
+                n = t.children[j]
+                is_wait = n.class_name+'.'+n.method_name in WAIT_FRAMES
+                if is_wait and not waiting:
+                    total += sum(n.times)
+                waiting = waiting or is_wait
+                inside[j] = waiting
+        return total
 
     def evidence_pack(self):
         """Bounded representative self hotspots; never sum inclusive ancestors."""
@@ -180,7 +248,8 @@ class Profile:
             covered = sum(r['self_ms'] for r in hotspots)
             total = result['denominator_ms']
             threads.append({'thread': ti, 'name': t.name[:120], 'window': None,
-                            'denominator_ms': total, 'selected_self_ms': covered,
+                            'denominator_ms': total, 'wait_ms': self.waiting(ti),
+                            'selected_self_ms': covered,
                             'selected_self_coverage_pct': 100*covered/total if total else None,
                             'hotspots': hotspots, 'remaining_sampled_ms': max(0, total-covered)})
         return {'unit': 'sampled_ms', 'threads': threads,

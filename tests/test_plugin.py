@@ -18,7 +18,9 @@ class Event:
     def get_sender_id(self): return 'alice'
     def plain_result(self, text): return text
     stopped = False
-    def is_admin(self): return getattr(self, 'admin', False)
+    # Default access is admin_only, so the test user is an admin unless a test says otherwise.
+    admin = True
+    def is_admin(self): return self.admin
     def stop_event(self): self.stopped = True
 
 class FakeSession:
@@ -85,7 +87,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured['chat_provider_id'], 'dedicated')
         self.assertEqual(len(captured['tools']), 1)
         self.assertEqual(len(plugin.history.list(plugin.owner(Event()), 'test', 'lag')), 1)
-        self.assertIn('历史记录', result[-1])
+        self.assertIn('compare，并带上 server=test problem=lag', result[-1])
+        self.assertNotIn(plugin.history.list(plugin.owner(Event()), 'test', 'lag')[0]['id'], result[-1])
         self.assertFalse(plugin.sessions)
         self.assertFalse(plugin.active)
 
@@ -151,6 +154,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_access_modes_and_all_entry_points(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'access_mode':'admin_only'})
         event = Event()
+        event.admin = False
         self.assertFalse(plugin.allowed(event))
         event.admin = True
         self.assertTrue(plugin.allowed(event))
@@ -165,6 +169,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.config['access_mode'] = 'admin_only'
         def fresh():
             event = Event()
+            event.admin = False
             event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
             return event
         # Auto analysis ignores non-permitted users so other handlers still see the message.
@@ -174,6 +179,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         for handler in (plugin.spark_command, lambda e: plugin.analyze_tool(e, 'https://spark.lucko.me/SyntheticReport001')):
             results = [r async for r in handler(fresh())]
             self.assertIn('权限', results[0])
+
+    async def test_default_access_is_admin_only(self):
+        # Code fallback and schema default must agree; AstrBot fills missing keys from the schema.
+        schema = __import__('json').loads((ROOT/'_conf_schema.json').read_text(encoding='utf-8'))
+        self.assertEqual(schema['access_mode']['default'], 'admin_only')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        member = Event()
+        member.admin = False
+        self.assertFalse(plugin.allowed(member))
+        self.assertTrue(plugin.allowed(Event()))
 
     async def test_duplicate_inflight_report_is_quiet(self):
         plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
@@ -234,7 +249,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.module, 'ReportSession', FakeSession):
             result = [r async for r in plugin.spark_command(Event())]
         self.assertIn('用简短中文回答', captured['system_prompt'])
-        self.assertIn('inclusive包含子调用', captured['system_prompt'])
+        self.assertIn(plugin.policy.strip(), captured['system_prompt'])
+        self.assertIn(plugin.guide.strip(), captured['system_prompt'])
         self.assertNotIn('##', result[-1])
         self.assertNotIn('**', result[-1])
         stored = plugin.history.list(plugin.owner(Event()), 'test', 'lag')[0]['result']
@@ -311,6 +327,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             db.execute("UPDATE reviews SET created=0 WHERE rowid=1")
         db.close()
         disabled = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        await disabled.initialize()
         with sqlite3.connect(path) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 1)
         db.close()
@@ -324,8 +341,58 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_corrupt_history_database_does_not_block_loading(self):
         (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
-        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        # AstrBot awaits initialize() inside its plugin-load try: anything escaping fails the load.
+        await plugin.initialize()
         self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_locked_history_does_not_stall_loading(self):
+        path = Path(self.temp.name)/'history.sqlite3'
+        holder = sqlite3.connect(path)
+        holder.execute('CREATE TABLE reviews (id TEXT PRIMARY KEY, owner TEXT, server TEXT, problem TEXT, created REAL, overview TEXT, result TEXT)')
+        holder.commit()
+        holder.execute('BEGIN EXCLUSIVE')
+        ticks = 0
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+        running = asyncio.create_task(ticker())
+        try:
+            started = asyncio.get_running_loop().time()
+            plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+            await plugin.initialize()
+            elapsed = asyncio.get_running_loop().time() - started
+        finally:
+            running.cancel()
+            holder.rollback()
+            holder.close()
+        # Bounded wait for the lock, and the event loop kept running meanwhile.
+        self.assertLess(elapsed, 3)
+        self.assertGreater(ticks, 10)
+        self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_forget_reports_unreadable_history(self):
+        (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event = Event()
+        event.message_str = '/spark forget'
+        result = [r async for r in plugin.spark_command(event)]
+        self.assertEqual(len(result), 1)
+        self.assertIn('未清除', result[0])
+        self.assertIn('管理员', result[0])
+        self.assertTrue(event.stopped)
+        self.assertTrue(any('forget failed' in item[0] for item in self.logs))
+
+    async def test_forget_reports_busy_history(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event = Event()
+        event.message_str = '/spark forget'
+        with patch.object(plugin.history, 'delete', side_effect=sqlite3.OperationalError('database is locked')):
+            result = [r async for r in plugin.spark_command(event)]
+        self.assertIn('未清除', result[0])
+        self.assertIn('稍后', result[0])
 
     async def test_history_save_failure_keeps_result(self):
         async def agent(**kwargs): return types.SimpleNamespace(completion_text='模型结论')
@@ -346,6 +413,69 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             result = [r async for r in plugin.spark_command(Event())]
         self.assertTrue(result[-1].startswith('模型结论'))
         self.assertIsNone(self.module.json.loads(captured['prompt'])['history_comparison'])
+
+    async def test_legacy_default_reply_prompt_is_replaced(self):
+        from test_briefing import LEGACY_DEFAULT_REPLY
+        saved = []
+        class Config(dict):
+            def save_config(self): saved.append(self['analysis_prompt'])
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='ok')
+        config = Config(analysis_provider_id='test', analysis_prompt=LEGACY_DEFAULT_REPLY)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), config)
+        await plugin.initialize()
+        # Persisted, so the config page shows the text that is actually used.
+        self.assertEqual(saved, [plugin.default_reply_prompt])
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        self.assertTrue(captured['system_prompt'].endswith(plugin.default_reply_prompt.strip()))
+
+    async def test_legacy_reply_prompt_is_not_used_even_if_unsaved(self):
+        from test_briefing import LEGACY_DEFAULT_REPLY
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='ok')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {
+            'analysis_provider_id': 'test', 'analysis_prompt': LEGACY_DEFAULT_REPLY})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        self.assertNotIn('QQ', captured['system_prompt'])
+
+    async def test_custom_reply_prompt_is_kept(self):
+        saved = []
+        class Config(dict):
+            def save_config(self): saved.append(True)
+        config = Config(analysis_prompt='只用三句话回答')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), config)
+        await plugin.initialize()
+        self.assertEqual((config['analysis_prompt'], saved), ('只用三句话回答', []))
+
+    async def test_served_model_is_logged(self):
+        async def agent(**kwargs):
+            return types.SimpleNamespace(completion_text='ok', raw_completion=types.SimpleNamespace(model='routed-mini'))
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id': 'test'})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        self.assertTrue(any('served_model' in item[0] and 'routed-mini' in item for item in self.logs))
+
+    async def test_model_input_has_triage_and_tool_guidance(self):
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='ok')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id': 'test'})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        overview = __import__('json').loads(captured['prompt'])['overview']
+        self.assertEqual(next(iter(overview)), 'triage')
+        tool = captured['tools'][0]
+        self.assertIn('不要调用', tool.description)
+        for name, schema in tool.parameters['properties'].items():
+            with self.subTest(parameter=name):
+                self.assertTrue(schema.get('description'))
 
     async def test_tool_fast_failure_does_not_stop_main_event(self):
         # The tool shares the main agent's event; stopping it aborts the main model's reply.
