@@ -22,13 +22,27 @@ class Event:
     admin = True
     def is_admin(self): return self.admin
     def stop_event(self): self.stopped = True
+    messages = []
+    def get_messages(self): return self.messages
+
+# Shapes of astrbot.core.message.components that main.py reads.
+class File:
+    def __init__(self, name, file='', url=''): self.name, self.file_, self.url = name, file, url
+
+class Reply:
+    def __init__(self, chain=None): self.chain = chain
 
 class FakeSession:
+    loaded = []
     def __init__(self, root, **kwargs): self.closed = False
     async def load(self, url):
         from test_core import sample
         from spark_core.profile import Profile
+        FakeSession.loaded.append(('link', url))
         return Profile(sample().SerializeToString()).overview()
+    async def load_file(self, local='', url=''):
+        FakeSession.loaded.append(('file', local, url))
+        return await self.load(None)
     async def query(self, **args): return {'rows': [], 'denominator_ms': 100}
     async def close(self): self.closed = True
 
@@ -50,10 +64,12 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         star.Context = object
         star.StarTools = types.SimpleNamespace(get_data_dir=lambda name: Path(self.temp.name))
         star.register = decorator
+        components = types.ModuleType('astrbot.api.message_components')
+        components.File, components.Reply = File, Reply
         tool = types.ModuleType('astrbot.core.agent.tool')
         tool.FunctionTool = lambda **kw: types.SimpleNamespace(**kw)
         tool.ToolSet = lambda tools: tools
-        self.modules = patch.dict(sys.modules, {'astrbot':types.ModuleType('astrbot'), 'astrbot.api':api, 'astrbot.api.event':event, 'astrbot.api.star':star, 'astrbot.core.agent.tool':tool})
+        self.modules = patch.dict(sys.modules, {'astrbot':types.ModuleType('astrbot'), 'astrbot.api':api, 'astrbot.api.event':event, 'astrbot.api.star':star, 'astrbot.api.message_components':components, 'astrbot.core.agent.tool':tool})
         self.modules.start()
         package = types.ModuleType('spark_test_plugin')
         package.__path__ = [str(ROOT)]
@@ -61,6 +77,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         spec = importlib.util.spec_from_file_location('spark_test_plugin.main', ROOT/'main.py')
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
+
+        FakeSession.loaded = []
 
     def tearDown(self):
         self.modules.stop()
@@ -612,5 +630,110 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(self.module, 'ReportSession', FakeSession):
                     results = [r async for r in plugin.auto_analyze(event)]
                 self.assertEqual(bool(results), triggers)
+
+    def file_event(self, *chain, text=''):
+        event = Event()
+        event.message_str = text
+        event.messages = list(chain)
+        return event
+
+    async def test_sparkprofile_attachment_starts_analysis_without_keyword(self):
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='文件分析结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        event = self.file_event(File('profile-2026-10-10.sparkprofile', url='https://files.example/a?token=t'))
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            results = [r async for r in plugin.auto_analyze(event)]
+        self.assertEqual(results, ['已收到Spark报告，开始分析流程。', '文件分析结论'])
+        self.assertEqual(FakeSession.loaded[0], ('file', '', 'https://files.example/a?token=t'))
+        self.assertEqual(self.module.json.loads(captured['prompt'])['user_observation'], '')
+        self.assertTrue(event.stopped)
+        self.assertFalse(plugin.inflight_reports)
+        # The signed URL is never logged; the file name is, shortened.
+        self.assertFalse(any('token=t' in str(item) for item in self.logs))
+        self.assertTrue(any('file:profile-2026-10-10.sparkprofile' in item for item in self.logs))
+
+    async def test_attachments_that_are_not_reports_are_ignored(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
+        for chain in ([File('notes.txt', url='https://files.example/n')], [File('heap.sparkheap', file='/tmp/h')], []):
+            with self.subTest(chain=chain):
+                event = self.file_event(*chain, text='看看这个')
+                self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+                self.assertFalse(event.stopped)
+        # Non-permitted senders and a disabled switch stay silent, as for links.
+        event = self.file_event(File('a.sparkprofile', url='https://files.example/a'))
+        event.admin = False
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+        plugin.config['auto_analyze'] = False
+        self.assertEqual([r async for r in plugin.auto_analyze(self.file_event(File('a.sparkprofile', url='https://files.example/a')))], [])
+        self.assertEqual(FakeSession.loaded, [])
+
+    async def test_command_reads_file_in_quoted_message(self):
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='引用文件结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        event = self.file_event(Reply([File('a.sparkprofile', file='/data/a.sparkprofile')]), text='/spark 掉TPS')
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            results = [r async for r in plugin.spark_command(event)]
+        self.assertEqual(results[-1], '引用文件结论')
+        self.assertEqual(FakeSession.loaded[0], ('file', '/data/a.sparkprofile', ''))
+        self.assertEqual(self.module.json.loads(captured['prompt'])['user_observation'], '掉TPS')
+        # The auto handler steps aside for the command, even with nothing after /spark.
+        self.assertEqual([r async for r in plugin.auto_analyze(self.file_event(File('b.sparkprofile', file='/b'), text='spark'))], [])
+
+    async def test_quoted_file_ignored_when_message_names_a_report(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='ok')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        event = self.file_event(Reply([File('old.sparkprofile', url='https://files.example/old')]),
+                                text='/spark https://spark.lucko.me/SyntheticReport001')
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(event)]
+        self.assertEqual(FakeSession.loaded, [('link', 'https://spark.lucko.me/SyntheticReport001')])
+
+    async def test_more_than_one_report_is_rejected(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
+        a, b = File('a.sparkprofile', url='https://files.example/a'), File('b.sparkprofile', url='https://files.example/b')
+        for chain, text in (([a, b], '/spark'), ([a], '/spark https://spark.lucko.me/SyntheticReport001'), ([], '/spark')):
+            with self.subTest(text=text, files=len(chain)):
+                results = [r async for r in plugin.spark_command(self.file_event(*chain, text=text))]
+                self.assertIn('请提供一个', results[-1])
+                self.assertIn('.sparkprofile', results[-1])
+        # The same file twice is one report.
+        self.assertEqual(len(plugin.sources(self.file_event(a, File('a.sparkprofile', file='/a')), '')), 1)
+
+    async def test_tool_reads_attached_file_without_url(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='后台文件结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        # AstrBot's main agent has already downloaded the attachment by the time it calls a tool.
+        event, sent = self.file_event(File('a.sparkprofile', file='/tmp/astrbot/fileseg_a.sparkprofile', url='https://files.example/a')), []
+        async def send(result): sent.append(result)
+        event.send = send
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            self.assertEqual([r async for r in plugin.analyze_tool(event)], [])
+            await asyncio.gather(*list(plugin.background_tasks))
+        self.assertEqual(sent[-1], '后台文件结论')
+        self.assertEqual(FakeSession.loaded[0], ('file', '/tmp/astrbot/fileseg_a.sparkprofile', 'https://files.example/a'))
+        self.assertFalse(event.stopped)
+
+    async def test_duplicate_inflight_file_is_quiet(self):
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
+        plugin.inflight_reports.add('file:a.sparkprofile')
+        event = self.file_event(File('a.sparkprofile', url='https://files.example/a'))
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+        self.assertTrue(event.stopped)
+
+    def test_attachment_fields(self):
+        attachment = self.module.attachment
+        self.assertEqual(attachment(File('a', file='/p', url='https://u')), ('/p', 'https://u'))
+        # Some adapters put the URL in the file field (KOOK), or in both fields (Telegram, QQ official).
+        self.assertEqual(attachment(File('a', file='https://u')), ('', 'https://u'))
+        self.assertEqual(attachment(File('a', file='https://u', url='https://u')), ('', 'https://u'))
+        none = File('a')
+        none.file_ = none.url = None
+        self.assertEqual(attachment(none), ('', ''))
 
 if __name__ == '__main__': unittest.main()

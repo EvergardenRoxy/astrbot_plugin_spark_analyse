@@ -7,6 +7,31 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## Unreleased
+
+> 本节修改通过 **Claude Code** 完成，尚未发布，版本号未变。实现细节、依据与验证方式见 [handoff.md](handoff.md) §18。
+
+### 新增
+
+- **支持 `.sparkprofile` 报告文件**：服务器用 `/spark profiler stop --save-to-file` 保存的报告，或上传失败时 spark 自动保存的文件，可以直接发到聊天分析，分析内容与报告链接相同。
+  - 开启“自动识别报告链接”时，有权限的人发送 `.sparkprofile` 文件即开始分析，不需要附文字或关键词；没有权限的人发送时插件不响应。
+  - 回复文件消息发送 `/spark 现象`，可以补充现象，也可以在关闭自动识别时使用；QQ 等不能给文件附文字的平台用这种方式。
+  - 使用 `spark_analyze` 工具时，消息中带有或引用了 `.sparkprofile` 文件，主聊天模型不必填写链接。
+  - 文件不超过 128 MiB，获取文件按“下载最长等待”计时；文件不进入报告缓存，也不经过下载代理，而是按 AstrBot 获取附件的方式从聊天平台下载。
+
+### 变更
+
+- `/spark` 后面换行再写内容时，自动识别不再抢先处理，与 AstrBot 识别命令的方式一致，统一由 `/spark` 命令处理。
+- `tools/check_sample.py` 可以直接检查本地的 `.sparkprofile` 文件（开发用）。
+
+### 测试
+
+- 单元测试由 104 项增至 125 项。
+
+### 未改动
+
+- 依赖（`requirements.txt`）和配置项键名、默认值未改动，只更新了三项配置的说明；报告链接的下载与解析限额未放宽。
+
 ## 1.0.6 - 2026-10-11
 
 > 本版本由 **Claude Opus 5.5**（通过 **Claude Code**）依据维护者确认的第三轮审查意见完成修改。实现细节、依据与验证方式见 [handoff.md](handoff.md)。

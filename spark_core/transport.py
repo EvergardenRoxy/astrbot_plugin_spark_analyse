@@ -1,6 +1,10 @@
+import asyncio
+import os
 import re
 import zlib
 import time
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 from astrbot.api import logger
 import aiohttp
 from .profile import ProfileError
@@ -77,3 +81,72 @@ async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds,
                     raise ProfileError('gzip流截断或存在额外数据')
             if not written:
                 raise ProfileError('报告为空')
+
+
+# `spark profiler stop --save-to-file` writes the raw SamplerData protobuf, with no transport compression, so a
+# file has a single limit: the decoded limit of a downloaded report.
+REPORT_FILE_SUFFIX = '.sparkprofile'
+FILE_TOO_LARGE = ('文件体积超限：.sparkprofile 文件超过 128 MiB，通常是采样时间太长。请缩短采样时间后重新导出，'
+                  '例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
+FILE_UNREADABLE = '无法读取聊天中的文件，请重新发送'
+
+
+def is_report_file(name):
+    return str(name or '').lower().endswith(REPORT_FILE_SUFFIX)
+
+
+async def fetch_file(local, url, path, limit=128*1024*1024, timeout_seconds=120):
+    """Copy a chat attachment to path: the adapter's local file when it exists, otherwise its download URL.
+
+    Both come from the platform adapter, never from message text. The URL can carry a token (Telegram puts the
+    bot token in it), so it is never logged or shown. It is fetched the way AstrBot fetches attachments
+    (environment proxy settings, redirects followed), but bounded in size and time.
+    """
+    local = url2pathname(urlsplit(local).path) if local.startswith('file://') else local
+    if local and os.path.isfile(local):
+        logger.info('Spark file route=local')
+        await asyncio.to_thread(_copy, local, path, limit)
+    elif url.startswith(('https://', 'http://')):
+        logger.info('Spark file route=url')
+        await _fetch(url, path, limit, timeout_seconds)
+    else:
+        raise ProfileError(FILE_UNREADABLE)
+    if not path.stat().st_size:
+        raise ProfileError('报告文件为空')
+
+
+def _copy(source, path, limit):
+    copied = 0
+    with open(source, 'rb') as reader, path.open('wb') as output:
+        while chunk := reader.read(1024*1024):
+            copied += len(chunk)
+            if copied > limit:
+                raise ProfileError(FILE_TOO_LARGE)
+            output.write(chunk)
+
+
+async def _fetch(url, path, limit, timeout_seconds):
+    stats = {'phase': '连接/等待响应头', 'received': 0, 'started': time.monotonic()}
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=min(30, timeout_seconds))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.get(url, headers={'Accept-Encoding': 'identity'}) as response:
+                if response.status != 200:
+                    raise ProfileError(f'文件下载失败 HTTP {response.status}，请重新发送文件')
+                if (response.content_length or 0) > limit:
+                    raise ProfileError(FILE_TOO_LARGE)
+                stats['phase'] = '读取响应体'
+                with path.open('wb') as output:
+                    async for chunk in response.content.iter_chunked(65536):
+                        stats['received'] += len(chunk)
+                        if stats['received'] > limit:
+                            raise ProfileError(FILE_TOO_LARGE)
+                        output.write(chunk)
+    except TimeoutError as exc:
+        elapsed = time.monotonic()-stats['started']
+        detail = f"阶段={stats['phase']}，已接收={stats['received']}字节，耗时={elapsed:.1f}秒"
+        logger.warning('Spark file download timeout: %s', detail)
+        raise TimeoutError(detail) from exc
+    except aiohttp.ClientError as exc:
+        # aiohttp messages include the URL; show the type only.
+        raise ProfileError(f'文件下载失败（{type(exc).__name__}），请重新发送文件') from None
