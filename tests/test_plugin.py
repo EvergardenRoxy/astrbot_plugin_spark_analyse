@@ -2,6 +2,7 @@
 import asyncio
 import importlib
 import importlib.util
+import sqlite3
 import sys
 import tempfile
 import types
@@ -162,9 +163,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.config['access_mode'] = 'all'
         self.assertTrue(plugin.allowed(event))
         plugin.config['access_mode'] = 'admin_only'
-        event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
-        for handler in (plugin.auto_analyze(event), plugin.spark_command(event), plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')):
-            results = [r async for r in handler]
+        def fresh():
+            event = Event()
+            event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
+            return event
+        # Auto analysis ignores non-permitted users so other handlers still see the message.
+        event = fresh()
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+        self.assertFalse(event.stopped)
+        for handler in (plugin.spark_command, lambda e: plugin.analyze_tool(e, 'https://spark.lucko.me/SyntheticReport001')):
+            results = [r async for r in handler(fresh())]
             self.assertIn('权限', results[0])
 
     async def test_duplicate_inflight_report_is_quiet(self):
@@ -245,11 +253,147 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         event.send = send
         with patch.object(self.module, 'ReportSession', FakeSession):
             result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
-            self.assertIn('后台', result[0])
+            # No return value: AstrBot ends the main agent's turn without a follow-up model call.
+            self.assertEqual(result, [])
             await asyncio.wait_for(started.wait(), 1)
             self.assertNotIn('后台结果', sent)
             release.set()
             await asyncio.gather(*list(plugin.background_tasks))
         self.assertIn('后台结果', sent)
+        self.assertEqual(sent[0], '已收到Spark报告，开始分析流程。')
+
+    async def test_tool_duplicate_report_gets_notice(self):
+        # The main model no longer replies after the tool, so a duplicate must not be silent there.
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
+        plugin.inflight_reports.add('SyntheticReport001')
+        event, sent = Event(), []
+        async def send(result): sent.append(result)
+        event.send = send
+        result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
+        await asyncio.gather(*list(plugin.background_tasks))
+        self.assertEqual(result, [])
+        self.assertEqual(len(sent), 1)
+        self.assertIn('正在分析', sent[0])
+        self.assertFalse(event.stopped)
+
+    async def test_startup_sweeps_stale_session_dirs(self):
+        # A crashed host leaves spark-* directories holding the full decoded report.
+        stale = Path(self.temp.name)/'spark-stale'
+        stale.mkdir()
+        (stale/'profile.bin').write_bytes(b'left behind by a crashed host')
+        keep = Path(self.temp.name)/'profiles.sqlite3'
+        keep.write_bytes(b'not a session dir')
+        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        self.assertFalse(stale.exists())
+        self.assertTrue(keep.exists())
+
+    async def test_terminate_closes_every_session(self):
+        attempts = []
+        class Session:
+            def __init__(self, broken): self.broken = broken
+            async def close(self):
+                attempts.append(self)
+                if self.broken: raise OSError('busy')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        plugin.sessions.update({Session(True), Session(False), Session(True)})
+        await plugin.terminate()
+        # Set order is arbitrary, so require every close attempt rather than a specific survivor.
+        self.assertEqual(len(attempts), 3)
+
+    async def test_history_retention_and_forget_while_disabled(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='ok')
+        path = Path(self.temp.name)/'history.sqlite3'
+        enabled = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            for _ in range(2):
+                [r async for r in enabled.spark_command(Event())]
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE reviews SET created=0 WHERE rowid=1")
+        db.close()
+        disabled = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        with sqlite3.connect(path) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 1)
+        db.close()
+        event = Event()
+        event.message_str = '/spark forget'
+        result = [r async for r in disabled.spark_command(event)]
+        self.assertIn('1条', result[0])
+        with sqlite3.connect(path) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 0)
+        db.close()
+
+    async def test_corrupt_history_database_does_not_block_loading(self):
+        (Path(self.temp.name)/'history.sqlite3').write_bytes(b'this is not a sqlite database'*50)
+        self.module.SparkPlugin(types.SimpleNamespace(), {})
+        self.assertTrue(any('history purge failed' in item[0] for item in self.logs))
+
+    async def test_history_save_failure_keeps_result(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='模型结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', FakeSession), \
+             patch.object(plugin.history, 'save', side_effect=sqlite3.OperationalError('database is locked')):
+            result = [r async for r in plugin.spark_command(Event())]
+        self.assertEqual(result[-1], '模型结论')
+
+    async def test_history_lookup_failure_skips_comparison(self):
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='模型结论')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test', 'history_enabled':True})
+        with patch.object(self.module, 'ReportSession', FakeSession), \
+             patch.object(plugin.history, 'list', side_effect=sqlite3.DatabaseError('file is not a database')):
+            result = [r async for r in plugin.spark_command(Event())]
+        self.assertTrue(result[-1].startswith('模型结论'))
+        self.assertIsNone(self.module.json.loads(captured['prompt'])['history_comparison'])
+
+    async def test_tool_fast_failure_does_not_stop_main_event(self):
+        # The tool shares the main agent's event; stopping it aborts the main model's reply.
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event, sent = Event(), []
+        async def send(result): sent.append(result)
+        event.send = send
+        result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
+        await asyncio.gather(*list(plugin.background_tasks))
+        self.assertEqual(result, [])
+        self.assertTrue(any('不会回落' in r for r in sent))
+        self.assertFalse(event.stopped)
+
+    async def test_tool_success_does_not_stop_main_event(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='后台结果')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        event, sent = Event(), []
+        async def send(result): sent.append(result)
+        event.send = send
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
+            await asyncio.gather(*list(plugin.background_tasks))
+        self.assertIn('后台结果', sent)
+        self.assertFalse(event.stopped)
+
+    async def test_cancel_with_uncancellable_model_task(self):
+        started, stop = asyncio.Event(), asyncio.Event()
+        async def stubborn_agent(**kwargs):
+            started.set()
+            while not stop.is_set():
+                try: await asyncio.wait_for(stop.wait(), 3600)
+                except asyncio.CancelledError: pass
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=stubborn_agent), {'analysis_provider_id':'test'})
+        real = self.module.cancel_bounded
+        async def run():
+            async for _ in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001'): pass
+        try:
+            with patch.object(self.module, 'ReportSession', FakeSession), \
+                 patch.object(self.module, 'cancel_bounded', lambda tasks: real(tasks, timeout=0.05)):
+                runner = asyncio.create_task(run())
+                await asyncio.wait_for(started.wait(), 5)
+                await asyncio.sleep(0.05)
+                runner.cancel()
+                await asyncio.wait({runner}, timeout=5)
+            self.assertTrue(runner.cancelled())
+            self.assertEqual(plugin.tasks, set())
+        finally:
+            stop.set()
+            await asyncio.sleep(0.1)
 
 if __name__ == '__main__': unittest.main()

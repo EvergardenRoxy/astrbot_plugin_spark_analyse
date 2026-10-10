@@ -1,15 +1,18 @@
 """Private worker. File protocol avoids pipe deadlocks and large IPC responses."""
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 # Executed as a file; do not depend on the plugin's dynamically assigned module name.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Replace (not prepend) the script directory so spark_core/profile.py cannot shadow stdlib `profile`.
+sys.path[0] = str(Path(__file__).resolve().parents[1])
 from spark_core.profile import Profile, ProfileError
 
 
 def run():
+    parent = os.getppid()
     if sys.platform != 'win32':
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (1536*1024*1024, 1536*1024*1024))
@@ -29,6 +32,10 @@ def run():
         ready.replace(directory/'ready.json')
         sequence = 0
         while not (directory/'stop').exists():
+            # Exit once orphaned: the host died without cleanup, or swept the directory on restart.
+            # getppid() does not change on Windows, so the directory check is the portable signal.
+            if not directory.exists() or (sys.platform != 'win32' and os.getppid() != parent):
+                return
             request_path = directory/f'request-{sequence}.json'
             if not request_path.exists():
                 time.sleep(0.05)
@@ -46,7 +53,9 @@ def run():
     except Exception as exc:
         # Chat shows only plugin-authored ProfileError text; other messages can carry local paths.
         reason = str(exc)[:200] if isinstance(exc, ProfileError) else ''
-        (directory/'ready.json').write_text(json.dumps({'error': type(exc).__name__+': '+reason}), encoding='utf-8')
+        failed = directory/'ready.tmp'
+        failed.write_text(json.dumps({'error': type(exc).__name__+': '+reason}), encoding='utf-8')
+        failed.replace(directory/'ready.json')
         raise
 
 if __name__ == '__main__':

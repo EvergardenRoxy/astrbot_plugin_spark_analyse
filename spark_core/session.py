@@ -97,8 +97,13 @@ class ReportSession:
 
     async def close(self):
         self.failed = True
-        if self.process and self.process.returncode is None:
-            self.process.kill()
-            await asyncio.wait_for(self.process.wait(), timeout=5)
-        if self.directory.exists():
-            shutil.rmtree(self.directory)
+        try:
+            if self.process and self.process.returncode is None:
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
+                await asyncio.wait_for(self.process.wait(), timeout=5)
+        finally:
+            # The directory holds the full decoded report; remove it even if the worker wait failed.
+            shutil.rmtree(self.directory, ignore_errors=True)

@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 import json
 import re
+import shutil
+import sqlite3
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -18,15 +20,23 @@ from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
 
 
-@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.2')
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.3')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         self.root = StarTools.get_data_dir('astrbot_plugin_spark')
+        # One session runs at a time and none exists yet, so any spark-* directory was left by a
+        # crashed host. Removing it also makes an orphaned worker exit.
+        for stale in self.root.glob('spark-*'):
+            shutil.rmtree(stale, ignore_errors=True)
         self.cache = ProfileCache(self.root/'profiles.sqlite3', config.get('profile_cache_hours', 72))
         self.background_tasks = set()
         self.history = History(self.root/'history.sqlite3', bool(config.get('history_enabled', False)))
+        try:
+            self.history.purge()
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning('Spark history purge failed: %s', type(exc).__name__)
         self.policy = Path(__file__).with_name('analysis_policy.md').read_text(encoding='utf-8')
         self.default_reply_prompt = Path(__file__).with_name('reply_prompt.txt').read_text(encoding='utf-8')
         self.active = set()
@@ -60,6 +70,9 @@ class SparkPlugin(Star):
         links = LINK.findall(text)
         if not links or not re.search(r'分析|诊断|排查|卡顿|掉tps|analy[sz]e', text, re.I):
             return
+        # Silent for non-permitted users so the message still reaches other handlers.
+        if not self.allowed(event):
+            return
         async for result in self.handle(event, text):
             yield result
 
@@ -73,7 +86,7 @@ class SparkPlugin(Star):
             return
         if text == 'forget':
             count = await asyncio.to_thread(self.history.delete, self.owner(event))
-            yield event.plain_result(f'已清除当前发送者在此会话的历史记录：{count}条。关闭存储时不会打开数据库；旧库须启用后清除。')
+            yield event.plain_result(f'已清除当前发送者在此会话的历史记录：{count}条。')
             event.stop_event()
             return
         async for result in self.handle(event, text):
@@ -81,18 +94,18 @@ class SparkPlugin(Star):
 
     @filter.llm_tool(name='spark_analyze')
     async def analyze_tool(self, event: AstrMessageEvent, report_url: str, observation: str = ''):
-        '''加载Spark报告并交给插件配置的专用分析模型；失败按备用模型顺序重试，不由主聊天模型分析原始数据。
+        '''把Spark性能报告交给插件分析。插件在后台下载报告并用专用分析模型分析，进度和结论会直接发给用户；本工具没有返回内容，调用后不要重复调用，也不要自己推测分析结论。
 
         Args:
-            report_url(string): 官方https://spark.lucko.me/报告ID链接。
-            observation(string): 用户现象，可附server=标签 problem=标签 compare。
+            report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID。
+            observation(string): 用户描述的现象，可选。可附 server=服务器标签、problem=问题标签；需要与上次结果对比时加 compare。
         '''
         if not self.allowed(event):
             yield '此会话或用户没有Spark分析权限。'
             return
         async def run():
             try:
-                async for result in self.handle(event, report_url+' '+observation):
+                async for result in self.handle(event, report_url+' '+observation, stop=False):
                     await event.send(result)
             except asyncio.CancelledError:
                 raise
@@ -101,32 +114,43 @@ class SparkPlugin(Star):
         task = asyncio.create_task(run())
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
-        yield 'Spark分析已转交插件后台执行，完成后直接发送结果；不要重复提交或自行假设分析结论。'
+        # No return value: AstrBot then ends the main agent's turn without another model call,
+        # so the plugin's own messages are the whole reply.
 
-    async def handle(self, event, text):
+    async def handle(self, event, text, *, stop=True):
+        # stop=False for the tool path: the event belongs to the main chat agent, and
+        # stopping it aborts the main model's reply.
         if not self.allowed(event):
             logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'all'))
             yield event.plain_result('此会话或用户没有Spark分析权限。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         links = list(dict.fromkeys(LINK.findall(text)))
         if len(links) != 1:
             yield event.plain_result('请提供一个 https://spark.lucko.me/报告ID 。可附 server=服务器标签 problem=问题标签；比较时添加 compare。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         provider = str(self.config.get('analysis_provider_id', '')).strip()
         if not provider:
-            yield event.plain_result('请先在插件配置选择Spark专用分析模型；不会回落到主聊天模型。')
-            event.stop_event()
+            yield event.plain_result('请先在插件配置中选择“分析模型”；不会回落到主聊天模型。')
+            if stop:
+                event.stop_event()
             return
         owner = self.owner(event)
         if links[0] in self.inflight_reports:
             logger.info('Spark duplicate in-flight report skipped')
-            event.stop_event()
+            if stop:
+                event.stop_event()
+            else:
+                # The tool path gets no main-model reply, so silence would leave the user with nothing.
+                yield event.plain_result('这份Spark报告正在分析中，完成后会直接发送结果。')
             return
         if owner in self.active or self.gate.locked():
             yield event.plain_result('已有Spark分析正在执行，请稍后再试。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         self.active.add(owner)
         self.inflight_reports.add(links[0])
@@ -153,8 +177,15 @@ class SparkPlugin(Star):
                 server = server_match.group(1) if server_match else overview.get('runtime', {}).get('server_hint', {}).get('tag', '')
                 problem = problem_match.group(1) if problem_match else (
                     'JVM与GC' if re.search(r'JVM|GC|启动参数|堆内存', text, re.I) else '性能分析')
-                history = await asyncio.to_thread(self.history.list, owner, server, problem) if server else []
-                comparison = compare(history[0]['overview'], overview) if history and 'compare' in text.lower() else None
+                history, comparison = [], None
+                if server:
+                    # Comparison is optional context; a broken history store must not fail the analysis.
+                    try:
+                        history = await asyncio.to_thread(self.history.list, owner, server, problem)
+                        comparison = compare(history[0]['overview'], overview) if history and 'compare' in text.lower() else None
+                    except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                        history, comparison = [], None
+                        logger.warning('Spark [%s] history comparison skipped: %s', trace, type(exc).__name__)
                 calls = 0
 
                 async def query(tool_event, view='hotspots', thread=0, node=-1, window=None, search='', offset=0):
@@ -202,11 +233,11 @@ class SparkPlugin(Star):
                             response = await model_task
                         finally:
                             remaining = await cancel_bounded({model_task})
-                            if remaining:
-                                self.background_tasks.update(remaining)
-                                for task in remaining:
-                                    task.add_done_callback(self.background_tasks.discard)
-                                raise RuntimeError('模型任务未及时取消，停止回退避免重复请求')
+                            # The in-flight exception propagates; `except Exception` below stops
+                            # falling back while a stuck task could still send a duplicate request.
+                            self.background_tasks.update(remaining)
+                            for stuck in remaining:
+                                stuck.add_done_callback(self.background_tasks.discard)
                         result = response.completion_text
                         if not result or not result.strip():
                             raise ValueError('分析模型没有返回文字结论')
@@ -219,7 +250,12 @@ class SparkPlugin(Star):
                         if remaining or attempt+1 == len(providers):
                             raise
                         yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(exc).__name__}），使用下一个模型继续尝试。')
-                history_id = await asyncio.to_thread(self.history.save, owner, server, problem, overview, result)
+                try:
+                    history_id = await asyncio.to_thread(self.history.save, owner, server, problem, overview, result)
+                except (sqlite3.Error, OSError) as exc:
+                    # The model already answered; a failed history write must not discard the result.
+                    history_id = None
+                    logger.warning('Spark [%s] history save failed: %s', trace, type(exc).__name__)
                 suffix = f'\n历史记录：{history_id}（server={server or "未标记"}，problem={problem or "未标记"}）' if history_id else ''
                 logger.info('Spark [%s] history saved=%s; sending final result', trace, bool(history_id))
                 yield event.plain_result(plain_text(result)+suffix)
@@ -245,7 +281,8 @@ class SparkPlugin(Star):
             self.active.discard(owner)
             self.inflight_reports.discard(links[0])
             self.tasks.discard(task)
-            event.stop_event()
+            if stop:
+                event.stop_event()
             logger.info('Spark [%s] cleanup complete', trace)
 
     async def terminate(self):
@@ -253,4 +290,7 @@ class SparkPlugin(Star):
         if remaining:
             logger.warning('Spark terminate: %s tasks did not stop within 5s', len(remaining))
         for session in list(self.sessions):
-            await session.close()
+            try:
+                await session.close()
+            except Exception as exc:
+                logger.warning('Spark terminate: session close failed: %s', type(exc).__name__)

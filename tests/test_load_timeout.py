@@ -110,3 +110,44 @@ class LoadTests(unittest.IsolatedAsyncioTestCase):
                         await s.load('https://spark.lucko.me/SyntheticReport001')
             finally:
                 await s.close()
+
+    async def test_close_removes_directory_when_worker_wait_fails(self):
+        with tempfile.TemporaryDirectory() as root:
+            s = ReportSession(root)
+            (s.directory/'profile.bin').write_bytes(b'decoded report data')
+            process = AsyncMock()
+            process.returncode = None
+            process.kill = lambda: None
+            process.wait.side_effect = TimeoutError()
+            s.process = process
+            with self.assertRaises(TimeoutError):
+                await s.close()
+            self.assertFalse(s.directory.exists())
+
+
+class WorkerLifecycleTests(unittest.TestCase):
+    def test_worker_exits_when_directory_removed(self):
+        # A host killed without cleanup leaves the worker running; removing its directory must stop it.
+        import shutil, time
+        from test_core import sample
+        worker = Path(__file__).resolve().parents[1]/'spark_core'/'worker.py'
+        root = tempfile.mkdtemp()
+        directory = Path(root)/'spark-x'
+        directory.mkdir()
+        (directory/'profile.bin').write_bytes(sample().SerializeToString())
+        proc = subprocess.Popen([sys.executable, str(worker), str(directory)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 30
+            while not (directory/'ready.json').exists() and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertTrue((directory/'ready.json').exists())
+            shutil.rmtree(directory)
+            for _ in range(60):
+                if proc.poll() is not None: break
+                time.sleep(0.05)
+            self.assertIsNotNone(proc.poll(), 'orphaned worker kept running after its directory was removed')
+        finally:
+            if proc.poll() is None: proc.kill()
+            proc.wait()
+            shutil.rmtree(root, ignore_errors=True)

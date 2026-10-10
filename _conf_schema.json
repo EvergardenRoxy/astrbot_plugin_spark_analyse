@@ -1,76 +1,31 @@
 {
   "analysis_provider_id": {
     "type": "string",
-    "description": "用于分析报告的模型",
+    "description": "分析模型",
     "_special": "select_provider",
     "default": "",
-    "hint": "先在AstrBot中添加模型，再在这里选择。请选择支持工具调用的模型；未选择时不会开始分析。"
+    "hint": "用来分析报告的模型，需要支持工具调用（函数调用）。不选择就不会开始分析，也不会改用主聊天模型。",
+    "obvious_hint": true
   },
   "fallback_providers": {
     "type": "template_list",
-    "description": "备用分析模型",
+    "description": "备用模型",
     "default": [],
     "templates": {
       "provider": {
-        "name": "添加备用模型",
+        "name": "备用模型",
         "items": {
           "provider_id": {
             "type": "string",
-            "description": "选择备用模型",
+            "description": "模型",
             "_special": "select_provider",
             "default": "",
-            "hint": "选择已经在AstrBot中配置好的模型，出错时按顺序使用。"
+            "hint": "从 AstrBot 中已添加的模型里选择。"
           }
         }
       }
     },
-    "hint": "首选模型出错时，按列表从上到下尝试。留空表示不使用备用模型。"
-  },
-  "acknowledgement_text": {
-    "type": "text",
-    "description": "收到报告后的回复",
-    "default": "已收到Spark报告，开始分析流程。",
-    "hint": "开始分析前只发送一次。可以写成你喜欢的文字，留空则不回复，最多1000个字符。"
-  },
-  "download_proxy_enabled": {
-    "type": "bool",
-    "description": "开启插件下载代理",
-    "default": false,
-    "hint": "默认关闭并直连。开启后仅下载Spark报告使用下方独立代理，不继承AstrBot或环境代理；失败不自动回退直连。"
-  },
-  "download_proxy_url": {
-    "type": "string",
-    "description": "插件下载代理地址",
-    "default": "",
-    "hint": "仅开启代理时使用。例如 http://代理主机:端口；支持HTTP/HTTPS代理，不支持SOCKS。地址必须在AstrBot运行环境中可达，容器中的127.0.0.1指容器本身。如含认证信息请仅在此本地配置，不发送到聊天。"
-  },
-  "download_timeout_seconds": {
-    "type": "int",
-    "description": "下载等待时间（秒）",
-    "default": 120,
-    "slider": {
-      "min": 15,
-      "max": 900,
-      "step": 15
-    },
-    "hint": "下载报告的总等待时间，默认120秒，最多900秒。慢网络可尝试600或900秒；不改变解析和模型期限，也不放宽体积限制。超时日志包含阶段和已接收字节。"
-  },
-  "parse_timeout_seconds": {
-    "type": "int",
-    "description": "解析等待时间（秒）",
-    "default": 90,
-    "slider": {
-      "min": 15,
-      "max": 300,
-      "step": 15
-    },
-    "hint": "读取报告并整理分析数据最多等待多久。默认90秒，大报告可以适当增加。"
-  },
-  "auto_analyze": {
-    "type": "bool",
-    "description": "自动分析报告链接",
-    "default": true,
-    "hint": "开启后，聊天中同时出现分析请求和Spark链接就会开始分析；关闭后可使用/spark命令或人格工具。"
+    "hint": "分析模型出错时，按从上到下的顺序换用。可以不填。"
   },
   "access_mode": {
     "type": "string",
@@ -81,31 +36,48 @@
       "admin_and_whitelist",
       "all"
     ],
-    "hint": "admin_only：仅AstrBot管理员；admin_and_whitelist：管理员和下方用户名单；all：所有人。这里的管理员是AstrBot管理员，不是QQ群管理员。"
+    "hint": "“管理员”指 AstrBot 管理员，不是 QQ 群管理员。选择“管理员和指定用户”时，在下一项填写用户。",
+    "labels": [
+      "仅管理员",
+      "管理员和指定用户",
+      "所有人"
+    ]
   },
   "user_whitelist": {
     "type": "list",
-    "description": "允许使用的用户",
+    "description": "指定用户",
     "default": [],
-    "hint": "每项填写一个用户ID，例如QQ号。仅在“管理员和用户名单”模式下生效。"
+    "hint": "每项填一个用户 ID（例如 QQ 号）。只在“管理员和指定用户”模式下生效。"
   },
   "allowed_origins": {
     "type": "list",
-    "description": "允许使用的聊天",
+    "description": "限定聊天",
     "default": [],
-    "hint": "留空允许所有聊天。需要限制时填写AstrBot的会话标识（UMO），不是只填QQ群号；人员权限仍需满足。"
+    "hint": "只允许在这些聊天中使用，留空表示不限制。每项填一个 AstrBot 会话标识（在聊天中发送 /sid 查看），不能只填群号。这里只限定聊天，使用的人仍需符合“谁可以使用”。"
   },
-  "history_enabled": {
+  "auto_analyze": {
     "type": "bool",
-    "description": "保存分析历史",
-    "default": false,
-    "hint": "开启后保存分析结果供以后比较，保留30天。关闭不会删除已有历史，也不影响报告缓存。"
+    "description": "自动识别报告链接",
+    "default": true,
+    "hint": "开启后，有权限的人在聊天中发送 Spark 报告链接，并提到“分析”“诊断”“排查”“卡顿”“掉TPS”等词时，自动开始分析，不需要 @ 机器人。关闭后可以用 /spark 命令，或让聊天模型调用 spark_analyze 工具。"
+  },
+  "acknowledgement_text": {
+    "type": "text",
+    "description": "开始分析时的提示",
+    "default": "已收到Spark报告，开始分析流程。",
+    "hint": "开始分析前发送一次，告诉用户已经收到报告，最多 1000 字。留空则不发送。让聊天模型调用工具时，这是用户收到的唯一开始提示，建议保留。"
   },
   "analysis_prompt": {
     "type": "text",
     "description": "分析回复要求",
     "default": "你面向QQ群里的Minecraft服主回复，不是在写技术审计报告。只输出中文纯文本，禁止Markdown标题、加粗、反引号、表格、代码块。不展示JSON、原始字段名、大段Java方法名、节点编号或分母算式。\n\n默认控制在500～900个中文字符左右；无需凑字数。按以下顺序组织，用短段落和①②③：\n结论：先用1～2句话回答卡在哪里、先查什么。区分“已观察到”和“候选原因”，不能确定时直说。\n主要问题：至多3项，每项用玩家能理解的名字（例如机器物流、区块活动、玩家数据保存），说明关键数值和意义。占比要写“主线程采样占比”，不要写成CPU占比。最关键的不确定性紧跟对应判断，不另写大篇免责条款。\n先怎么做：给一个低风险、可逆的验证行动，说明如何对照采样判断有效。不要同时建议一堆调整。\n补充：只写影响结论的采样限制，例如只采主线程或无法确认具体机器地点。\n\n不要重复开场确认；不要泛泛解释profiling术语。环境和TPS/MSPT压缩成一行即可。对用户现象没有证据时明确承认，不把高占比自动解释成异常。证据核对必须在分析过程完成，聊天只保留必要数字和短证据描述，用户明确要技术详情才展开节点、窗口及路径。\n",
-    "hint": "可以修改分析重点、语气和篇幅。报告数据会自动提供，不用填写占位符。留空恢复默认；保存后重载插件。"
+    "hint": "告诉分析模型回复的重点、语气和长度。报告数据由插件自动提供，不需要写占位符。清空后恢复默认内容。保存后生效。"
+  },
+  "history_enabled": {
+    "type": "bool",
+    "description": "保存分析历史",
+    "default": false,
+    "hint": "开启后保存每次的分析结果，之后分析同一台服务器时，加上 compare 就能和上次对比。记录保留 30 天。关闭后不再保存新记录；已有记录仍可用 /spark forget 删除，超过 30 天的会在插件加载时自动删除。"
   },
   "profile_cache_hours": {
     "type": "int",
@@ -116,6 +88,40 @@
       "max": 8760,
       "step": 1
     },
-    "hint": "默认72小时，从最近一次使用开始计时。同一报告再次使用会重新计时，即使模型分析失败也保留已下载的报告。"
+    "hint": "下载过的报告在本地保留多久，期间再次分析同一份报告不用重新下载。从最后一次使用开始计时，默认 72 小时；分析失败也会保留已下载的报告。缓存最多 64 份、共 512 MiB，超出时先删除最久没用的。"
+  },
+  "download_timeout_seconds": {
+    "type": "int",
+    "description": "下载最长等待（秒）",
+    "default": 120,
+    "slider": {
+      "min": 15,
+      "max": 900,
+      "step": 15
+    },
+    "hint": "下载报告最多等多久，默认 120 秒，最长 900 秒。网络慢时可以调到 600 或 900。"
+  },
+  "parse_timeout_seconds": {
+    "type": "int",
+    "description": "解析最长等待（秒）",
+    "default": 90,
+    "slider": {
+      "min": 15,
+      "max": 300,
+      "step": 15
+    },
+    "hint": "读取并整理报告数据最多等多久，默认 90 秒，最长 300 秒。报告很大时可以调高。"
+  },
+  "download_proxy_enabled": {
+    "type": "bool",
+    "description": "下载报告时使用代理",
+    "default": false,
+    "hint": "默认关闭，直接连接。开启后只有下载 Spark 报告会经过下一项填写的代理，不使用 AstrBot 或系统的代理设置，也不影响模型的连接。代理连不上时不会自动改为直连。"
+  },
+  "download_proxy_url": {
+    "type": "string",
+    "description": "代理地址",
+    "default": "",
+    "hint": "开启上一项后才使用。格式如 http://代理主机:端口，支持 HTTP / HTTPS 代理，不支持 SOCKS。AstrBot 在 Docker 中运行时，127.0.0.1 指容器自己，请填写容器能访问到的地址。地址里有账号密码时只填在这里，不要发到聊天中。"
   }
 }

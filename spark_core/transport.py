@@ -16,7 +16,8 @@ def validate_proxy(value):
         raise ProfileError('下载代理地址无效；请填写HTTP/HTTPS代理地址，不支持SOCKS或路径参数') from None
     return str(url)
 
-LINK = re.compile(r'https://spark\.lucko\.me/([A-Za-z0-9]{6,64})(?![A-Za-z0-9/._-])')
+# A trailing '.' or '/' ends the link (sentence punctuation); '/x' or '.x' means a longer, unsupported URL.
+LINK = re.compile(r'https://spark\.lucko\.me/([A-Za-z0-9]{6,64})(?![A-Za-z0-9_-]|/[A-Za-z0-9]|\.[A-Za-z0-9])')
 
 
 def report_id(url):
