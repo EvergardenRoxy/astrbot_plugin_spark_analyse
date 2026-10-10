@@ -87,7 +87,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured['chat_provider_id'], 'dedicated')
         self.assertEqual(len(captured['tools']), 1)
         self.assertEqual(len(plugin.history.list(plugin.owner(Event()), 'test', 'lag')), 1)
-        self.assertIn('历史记录', result[-1])
+        self.assertIn('compare，并带上 server=test problem=lag', result[-1])
+        self.assertNotIn(plugin.history.list(plugin.owner(Event()), 'test', 'lag')[0]['id'], result[-1])
         self.assertFalse(plugin.sessions)
         self.assertFalse(plugin.active)
 
@@ -248,7 +249,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.module, 'ReportSession', FakeSession):
             result = [r async for r in plugin.spark_command(Event())]
         self.assertIn('用简短中文回答', captured['system_prompt'])
-        self.assertIn('inclusive包含子调用', captured['system_prompt'])
+        self.assertIn(plugin.policy.strip(), captured['system_prompt'])
+        self.assertIn(plugin.guide.strip(), captured['system_prompt'])
         self.assertNotIn('##', result[-1])
         self.assertNotIn('**', result[-1])
         stored = plugin.history.list(plugin.owner(Event()), 'test', 'lag')[0]['result']
@@ -411,6 +413,69 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             result = [r async for r in plugin.spark_command(Event())]
         self.assertTrue(result[-1].startswith('模型结论'))
         self.assertIsNone(self.module.json.loads(captured['prompt'])['history_comparison'])
+
+    async def test_legacy_default_reply_prompt_is_replaced(self):
+        from test_briefing import LEGACY_DEFAULT_REPLY
+        saved = []
+        class Config(dict):
+            def save_config(self): saved.append(self['analysis_prompt'])
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='ok')
+        config = Config(analysis_provider_id='test', analysis_prompt=LEGACY_DEFAULT_REPLY)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), config)
+        await plugin.initialize()
+        # Persisted, so the config page shows the text that is actually used.
+        self.assertEqual(saved, [plugin.default_reply_prompt])
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        self.assertTrue(captured['system_prompt'].endswith(plugin.default_reply_prompt.strip()))
+
+    async def test_legacy_reply_prompt_is_not_used_even_if_unsaved(self):
+        from test_briefing import LEGACY_DEFAULT_REPLY
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='ok')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {
+            'analysis_provider_id': 'test', 'analysis_prompt': LEGACY_DEFAULT_REPLY})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        self.assertNotIn('QQ', captured['system_prompt'])
+
+    async def test_custom_reply_prompt_is_kept(self):
+        saved = []
+        class Config(dict):
+            def save_config(self): saved.append(True)
+        config = Config(analysis_prompt='只用三句话回答')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), config)
+        await plugin.initialize()
+        self.assertEqual((config['analysis_prompt'], saved), ('只用三句话回答', []))
+
+    async def test_served_model_is_logged(self):
+        async def agent(**kwargs):
+            return types.SimpleNamespace(completion_text='ok', raw_completion=types.SimpleNamespace(model='routed-mini'))
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id': 'test'})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        self.assertTrue(any('served_model' in item[0] and 'routed-mini' in item for item in self.logs))
+
+    async def test_model_input_has_triage_and_tool_guidance(self):
+        captured = {}
+        async def agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(completion_text='ok')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id': 'test'})
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.spark_command(Event())]
+        overview = __import__('json').loads(captured['prompt'])['overview']
+        self.assertEqual(next(iter(overview)), 'triage')
+        tool = captured['tools'][0]
+        self.assertIn('不要调用', tool.description)
+        for name, schema in tool.parameters['properties'].items():
+            with self.subTest(parameter=name):
+                self.assertTrue(schema.get('description'))
 
     async def test_tool_fast_failure_does_not_stop_main_event(self):
         # The tool shares the main agent's event; stopping it aborts the main model's reply.

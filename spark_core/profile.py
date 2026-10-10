@@ -1,5 +1,6 @@
 """Validated, bounded Spark execution-profile queries, independent of AstrBot."""
 import hashlib
+import heapq
 import math
 from .proto.spark_sampler_pb2 import SamplerData
 
@@ -12,6 +13,24 @@ class ProfileError(ValueError):
 def present_number(message, name):
     # proto3 scalar zero has no presence; do not invent a measured zero.
     return getattr(message, name) if name in {f.name for f, _ in message.ListFields()} else None
+
+
+def present_count(message, name):
+    # Spark writes -1 when it could not count; that is unknown, not a count.
+    value = present_number(message, name)
+    return value if value is None or value >= 0 else None
+
+
+# JDK frames where a thread is parked rather than running. Counted once at the outermost frame, so native
+# frames below them (async-profiler) are included.
+WAIT_FRAMES = frozenset({'jdk.internal.misc.Unsafe.park', 'sun.misc.Unsafe.park', 'java.lang.Thread.sleep',
+                         'java.lang.Thread.sleep0', 'java.lang.Thread.sleepNanos0', 'java.lang.Object.wait',
+                         'java.lang.Object.wait0'})
+# The server loop waiting for the next tick. Only matches readable (Mojang) method names; on older Forge
+# (e.g. 1.20.1) runtime method names are SRG ids, so such waits count as "other".
+TICK_IDLE_FRAMES = frozenset({'net.minecraft.server.MinecraftServer.waitUntilNextTick',
+                              'net.minecraft.server.MinecraftServer.waitForTasks'})
+PERFORMANCE_GAME_RULES = ('randomTickSpeed', 'doMobSpawning', 'maxEntityCramming', 'spawnChunkRadius')
 
 
 class Profile:
@@ -148,13 +167,67 @@ class Profile:
                 'window_health': [{'window': w, 'tps': present_number(s, 'tps'),
                                    'mspt_median': present_number(s, 'mspt_median'),
                                    'mspt_max': present_number(s, 'mspt_max'),
-                                   'players': present_number(s, 'players'),
-                                   'chunks': present_number(s, 'chunks')}
+                                   'players': present_count(s, 'players'),
+                                   'entities': present_count(s, 'entities'),
+                                   'tile_entities': present_count(s, 'tile_entities'),
+                                   'chunks': present_count(s, 'chunks')}
                                   for w, s in sorted(self.data.time_window_statistics.items())][:120],
+                'world': self.world_statistics(),
                 'platform_truncated': any(len(value) > limit for value, limit in (
                      (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120))),
                  'limitations': ['scalar absent/zero reported as null', 'no automatic obfuscation mapping',
                                 'class source only; not mod causality', 'thread share is not CPU share']}
+
+    def world_statistics(self):
+        """Entity counts Spark stores with the report (absent on older reports); bounded summaries only."""
+        stats = self.data.metadata.platform_statistics
+        if not stats.HasField('world'):
+            return None
+        w = stats.world
+        def top(counts, n):
+            return [[str(k)[:80], v] for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
+        chunks = ((world.name, c) for world in w.worlds for region in world.regions for c in region.chunks)
+        busiest = heapq.nlargest(5, chunks, key=lambda item: item[1].total_entities)
+        rules = {}
+        for rule in w.game_rules:
+            if rule.name in PERFORMANCE_GAME_RULES:
+                changed = {k[:80]: v[:40] for k, v in sorted(rule.world_values.items()) if v != rule.default_value}
+                if changed:
+                    rules[rule.name] = {'default': rule.default_value[:40], 'worlds': dict(list(changed.items())[:16])}
+        return {'total_entities': present_count(w, 'total_entities'),
+                'entity_type_count': len(w.entity_counts), 'entity_types': top(w.entity_counts, 10),
+                'dimensions': [{'name': world.name[:80], 'entities': world.total_entities}
+                               for world in sorted(w.worlds, key=lambda x: -x.total_entities)[:12]],
+                'dimension_count': len(w.worlds),
+                'busiest_chunks': [{'dimension': name[:80], 'chunk_x': c.x, 'chunk_z': c.z,
+                                    'block_x': c.x*16+8, 'block_z': c.z*16+8, 'entities': c.total_entities,
+                                    'entity_types': top(c.entity_counts, 3)} for name, c in busiest],
+                'changed_game_rules': rules}
+
+    def waiting(self, thread):
+        """Sampled ms parked between ticks (spare capacity) and parked elsewhere (stalls or unclassified)."""
+        t = self.data.threads[thread]
+        parents = self.parents[thread]
+        state = [None] * len(t.children)
+        idle = other = 0.0
+        for start in range(len(t.children)):
+            chain, i = [], start
+            while i != -1 and state[i] is None:
+                chain.append(i)
+                i = parents[i]
+            inside_wait, inside_idle = state[i] if i != -1 else (False, False)
+            for j in reversed(chain):
+                n = t.children[j]
+                name = n.class_name+'.'+n.method_name
+                if name in WAIT_FRAMES and not inside_wait:
+                    if inside_idle:
+                        idle += sum(n.times)
+                    else:
+                        other += sum(n.times)
+                inside_wait = inside_wait or name in WAIT_FRAMES
+                inside_idle = inside_idle or name in TICK_IDLE_FRAMES
+                state[j] = (inside_wait, inside_idle)
+        return idle, other
 
     def evidence_pack(self):
         """Bounded representative self hotspots; never sum inclusive ancestors."""
@@ -179,8 +252,10 @@ class Profile:
                 r['path_omitted_frames'] = max(0, len(ids)-8)
             covered = sum(r['self_ms'] for r in hotspots)
             total = result['denominator_ms']
+            idle, other = self.waiting(ti)
             threads.append({'thread': ti, 'name': t.name[:120], 'window': None,
-                            'denominator_ms': total, 'selected_self_ms': covered,
+                            'denominator_ms': total, 'idle_between_ticks_ms': idle, 'other_wait_ms': other,
+                            'selected_self_ms': covered,
                             'selected_self_coverage_pct': 100*covered/total if total else None,
                             'hotspots': hotspots, 'remaining_sampled_ms': max(0, total-covered)})
         return {'unit': 'sampled_ms', 'threads': threads,

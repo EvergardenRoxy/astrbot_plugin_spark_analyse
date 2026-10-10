@@ -13,7 +13,7 @@ CHANGELOG for that).
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.4 (§9). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 93 (Unreleased, §10), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -34,7 +34,8 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `c4c1311` | Release prep for 1.0.3 (§7); merged into `main` as PR #2 |
 | `33b147c` | Review round 2 items 3 and 4: default `admin_only`, trimmed 1.0.3 CHANGELOG (§8) |
 | `8090d18` | Review round 2 item 2: `/spark forget` guard, startup purge in `initialize()` (§8) |
-| last commit | Release prep for 1.0.4 (§9). Branch `v1.0.4` holds the same tree as one commit on `main`. |
+| `1106402` | Release prep for 1.0.4 (§9). Branch `v1.0.4` holds the same tree as one commit on `main`. |
+| last commit | Prompt rewrite and model-input changes (§10), under `## Unreleased` |
 
 ## 2. Changes, reasoning, evidence
 
@@ -243,6 +244,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
 - Merge `v1.0.4` into `main`: no PR was created by the agent; that is the maintainer's call.
 - Review round 2 item 1 (`worker.py` `sys.path` handling under `PYTHONSAFEPATH`): proposed in §8, not implemented.
+- Prompt rewrite phase 2 (§10): per-category tick breakdown. Not started.
+- Prompt rewrite (§10) has not been evaluated against a live model yet; use `tools/dump_prompt.py`.
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
@@ -259,6 +262,10 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   re-reading §2.2, since doing so brings back the extra main-model call.
 - Config schema: keys and types are a compatibility surface for existing installs. A default change only reaches
   new installs (AstrBot fills missing keys only), so treat it as a product decision and note it in CHANGELOG.
+- Load thresholds live only in `spark_core/briefing.py`. Prompt files refer to `triage.load` / `triage.spikes`
+  and must not restate the numbers (CHANGELOG may, as a record).
+- Every file `main.py` reads with `with_name(...)` must be in `tools/package_plugin.py`'s list
+  (`test_prompt_files_are_packaged`); otherwise the release zip crashes at load.
 - Default access is `admin_only`. The code fallback (`config.get('access_mode', 'admin_only')`, 3 places in
   `main.py`) must match the schema default; `test_default_access_is_admin_only` checks both.
 
@@ -354,3 +361,90 @@ is exactly the round-2 work (`33b147c`, `8090d18`) plus this prep.
 - **Note for the next round:** once `v1.0.4` is merged, `claude/keen-bohr-d01us1` is not an ancestor of
   `main` (the release commit is a squash). Restart the work branch from `main` before new work, so later
   diffs do not repeat these commits.
+
+## 10. Prompt rewrite and model-input changes (Unreleased)
+
+Maintainer feedback: replies analysed too much, buried the conclusion and were verbose. Requested: a built-in
+system prompt that helps the model reach a conclusion faster. Phase 1 of the agreed plan is implemented
+(proposal items A, B1-B3, B5, C, D); phase 2 (B4, per-category tick breakdown) is not started.
+
+**Evidence the redesign rests on.** A maintainer-supplied report and the reply it produced, reproduced in a
+scratch directory with the plugin's own loader. The report: NeoForge 1.21.1, 33.5 s, 3 players, TPS ~20,
+MSPT median 11.6 / max 1806 ms. Its link is deliberately not recorded anywhere in the repo (same concern as F7).
+- **Reply template:** it forced four sections and 500-900 characters, so a healthy report still got three
+  "main problems". About 20 "不能…" rules in the policy turned into 6 hedges in the reply.
+- **No verdict rule:** "60% waiting" was presented as problem ①, although it was idle capacity. The real
+  finding (an occasional 1.8 s spike that this short sample could not explain) was buried.
+- **Data dropped by the parser:** the report carries `PlatformStatistics.world` (316 entities, types, 7
+  dimensions, per-chunk counts with coordinates), but the parser never read it. The model then claimed the
+  report had no entity data.
+- **Payload noise:** `vm_args` was 6.5 KB of the 15 KB payload.
+- **Weak precomputed hotspots:** the evidence pack ranks by self time, so apart from the park it surfaced
+  1% leaf methods (`Iterators.hasNext`). Readable categories cost the model extra queries.
+
+**Prompt layers** (`system_prompt()` in `briefing.py`; order policy -> guide -> reply):
+- `analysis_policy.md` (built-in, rewritten): role and data trust, a 4-step procedure ("read triage first,
+  do not re-judge it", "usually 0-2 queries"), and the 8 rules that prevent wrong conclusions. Shorter than
+  before, with the hedging rules consolidated.
+- `diagnosis_guide.md` (built-in, new): how to read each triage label, common sources -> first action, and
+  follow-up spark commands. Every command and flag was checked against spark's Command-Usage docs
+  (`--only-ticks-over`, `--timeout`, `--thread *`, `--alloc`, `tickmonitor --threshold-tick`, `gc`,
+  `gcmonitor`). It contains no triage threshold numbers.
+- `reply_prompt.txt` / `analysis_prompt` default (user-editable, rewritten): no platform or audience. The
+  first sentence is the verdict. A healthy or mildly loaded report without spikes gets 3-5 sentences.
+  Problems get <= ~800 characters with a fixed structure: 结论 / 主要原因 (<= 3) / 建议 (<= 3) /
+  采样限制. `test_shipped_prompt_files_agree` keeps the file and the schema default identical and checks
+  that "QQ", "服主" and "群" are absent.
+
+**Load classes** (`briefing.py`, maintainer-set; the only place these numbers live):
+- sustained: TPS < 15 or MSPT median > 70 ms
+- mild: TPS < 19.5 or median > 40 ms. Common on multiplayer servers because vanilla ticks every dimension on
+  one thread, so the guide says it is normally not urgent.
+- spike: max > 500 ms and > 5 × median
+
+`triage()` also derives `spike_ratio`, the idle and other-wait percentages, `chunks_per_player`, entity count
+and sample length, plus a Chinese `summary` sentence. `model_overview()` puts `triage` first in the overview.
+
+**Data changes** (`profile.py`; worker side, bounded):
+- `world_statistics()` -> `overview.world`: total entities, top-10 types, up to 12 dimensions, the 5 busiest
+  chunks with chunk and centre block coordinates and top-3 types. Also performance game rules
+  (`randomTickSpeed`, `doMobSpawning`, `maxEntityCramming`, `spawnChunkRadius`), only where a world differs
+  from the default. `None` when the report has no world stats. About 1.6 KB on the sample.
+- `window_health` gains `entities` and `tile_entities` via `present_count()`, which maps Spark's -1
+  ("could not count") to `None`.
+- `waiting()` adds `idle_between_ticks_ms` and `other_wait_ms` per evidence thread. It sums the inclusive time
+  of the outermost JDK wait frame (park, sleep, wait). The time counts as idle when an ancestor is
+  `MinecraftServer.waitUntilNextTick` / `waitForTasks`; the sample's park path went through `waitForTasks`.
+  - Limitation: it only works with readable (Mojang) method names. On older Forge (SRG ids) between-tick idle
+    lands in `other_wait_ms`, and the triage summary then says the two cannot be told apart instead of calling it a stall.
+- `model_overview()` replaces `vm_args` with `{key_flags, other_flag_count, note}` unless the question
+  matches `JVM_QUESTION`. The history row and the problem label still use the full overview and the old regex.
+
+**Measured on the sample:** user message 15 KB -> 11.3 KB (including +1.6 KB world and the triage block);
+system prompt 4.2 KB -> 7.1 KB (the guide). Triage: load `none`, spikes `true` (155.7×), idle 60.4%, other
+wait 0%, about 2398 chunks per player, 316 entities.
+
+**Legacy prompt migration (D):** `LEGACY_REPLY_DIGESTS` holds SHA-256 hashes of whitespace-stripped shipped
+defaults. Every historical `analysis_prompt` default and `reply_prompt.txt` in git normalises to one hash.
+- `reply_requirements()` treats an empty or legacy value as "use the current default" at analysis time, so
+  behaviour is correct even if saving fails.
+- `initialize()` also rewrites and `save_config()`s the legacy value, so the config page shows the text
+  actually used. `save_config` exists in 4.16.0 and 4.28.2; the call is guarded with `getattr`. Custom text is
+  never touched.
+- When the default changes again, add the hash of the previous default to `LEGACY_REPLY_DIGESTS`.
+
+**Other:**
+- `spark_query` got per-parameter descriptions and "do not call when triage/evidence/world suffice".
+- The success log adds `served_model` from `response.raw_completion.model` (the `LLMResponse.raw_completion`
+  field exists in 4.16.0 and 4.28.2; read with `getattr`, so other providers log `unknown`). It is the name the
+  provider reports, so a provider that misreports cannot be detected this way.
+- The history note shown in chat no longer exposes the record id (it is still logged). It repeats the
+  `server=` / `problem=` tags the user typed, because `compare` matches records by tags.
+- `tools/dump_prompt.py <url> [question]` prints the exact system prompt and user message.
+
+**Tests (+22):** `tests/test_briefing.py` covers the load classes and spike boundaries, summary wording,
+unclassified waiting, vm_args trimming and the JVM-question exception, payload rules, legacy detection
+(including CRLF and whitespace variants), prompt order, schema/file agreement, and the packaging list.
+`test_core.py` covers world statistics, window counts and the wait split. `test_plugin.py` covers legacy
+replacement (saved and unsaved), keeping custom text, the served-model log, triage-first payload, tool
+parameter descriptions and the new history note. Each new test failed on the code before its change.
