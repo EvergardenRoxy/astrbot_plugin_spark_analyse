@@ -7,6 +7,13 @@
 >
 > 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与更新日志整理。
 
+# 作者注
+
+这个项目从1.0.2版本开始转用了Claude Code，众所周知Claude的任务执行和代码能力很强，但是思维链是个黑箱
+#### 从1.0.2版本开始 本项目使用AI进行审查 + 目标实现上的手动复测
+所以这个项目也变成了一定意义上的许愿式coding
+#### 作为代替，AI在每次执行修改后，都会在changelog和handoff文档内记录操作，来方便后期debug与项目审查。
+
 # Spark 报告分析
 
 在 AstrBot 聊天中发送现状和 Spark 报告链接，即可获得 Minecraft 性能分析与排查建议。面向 Minecraft 1.20.1 及以上的 Forge / NeoForge 服务端，也可以询问报告中的 JVM 参数、内存和 GC 表现。
