@@ -12,8 +12,8 @@ CHANGELOG for that).
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.3 (see §7). Changes are under `## 1.0.3 - 2026-10-11` in `CHANGELOG.md`. |
-| Tests | 51 -> 71, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Version | 1.0.4 (§9). 1.0.3 (§7) was merged into `main` via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`. |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -31,7 +31,10 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `4a1fd87` | Config page rewrite and reorder (`_conf_schema.json`, README) |
 | `9c2099e` | This file rewritten as an English engineering record |
 | `c47cc0f` | Maintainer's own README edit (author note); not touched afterwards |
-| last commit | Release prep for 1.0.3 (§7) |
+| `c4c1311` | Release prep for 1.0.3 (§7); merged into `main` as PR #2 |
+| `33b147c` | Review round 2 items 3 and 4: default `admin_only`, trimmed 1.0.3 CHANGELOG (§8) |
+| `8090d18` | Review round 2 item 2: `/spark forget` guard, startup purge in `initialize()` (§8) |
+| last commit | Release prep for 1.0.4 (§9). Branch `v1.0.4` holds the same tree as one commit on `main`. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -192,7 +195,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 - Deleted `tools/release_descriptions.py`: its assert failed against the current schema, and it would have
   overwritten newer text.
 - `tools/package_plugin.py` reads `^version:` from `metadata.yaml` (regex; no PyYAML). The output name
-  follows it (`astrbot_plugin_spark-v1.0.3.zip` now). The zip uses an explicit file list:
+  follows it (for example `astrbot_plugin_spark-v1.0.4.zip`). The zip uses an explicit file list:
   `handoff.md` and `CHANGELOG.md` are not packaged (`README.md`,
   `THIRD_PARTY.md` and `analysis_policy.md` are).
 - `test_version_is_consistent`: `metadata.yaml` (leading `v` stripped) == the `@register` literal == the
@@ -238,7 +241,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 ## 5. Open items
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
-- Merge `v1.0.3` into `main`: no PR was created; that is the maintainer's call.
+- Merge `v1.0.4` into `main`: no PR was created by the agent; that is the maintainer's call.
+- Review round 2 item 1 (`worker.py` `sys.path` handling under `PYTHONSAFEPATH`): proposed in §8, not implemented.
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
@@ -282,8 +286,8 @@ then created at the same commit (the naming follows the existing `v1.0.2` releas
 ## 8. Review round 2 (after release prep)
 
 Maintainer review of the branch raised four items. Items 3, 4 and then 2 were implemented; item 1 is
-proposed only, pending the maintainer's go-ahead. Branch `v1.0.3` still points at `c4c1311` and does not have
-this round.
+proposed only, pending the maintainer's go-ahead. `v1.0.3` had already been merged (PR #2) when this round
+started, so this round ships as 1.0.4 (§9).
 
 - **Item 4, default access (implemented):** the `access_mode` default changed from `all` to `admin_only`
   (maintainer decision, not open for discussion). Changed in the schema default, the hint, the 3 code
@@ -324,3 +328,29 @@ this round.
     - `str(exc)` is only used to classify, never shown in chat (the path-leak rule still holds).
   - The report cache DB needed no change: it does not touch the DB at init, and it only runs in worker
     threads (30 s timeout).
+  - **Proposal for item 1 (not implemented):** replace `sys.path[0]` only when it resolves to the script
+    directory, otherwise `insert(0, root)`. Reproduced in a scratch copy: under `PYTHONSAFEPATH=1` the
+    current code overwrote a `PYTHONPATH` entry; the conditional version kept it, and resolved stdlib
+    `profile` in both modes. Suggested tests: put the decision in a function that is only called when the
+    worker runs as a script, so importing it does not touch the test process's `sys.path`; unit-test both
+    branches; add one subprocess smoke test with `PYTHONSAFEPATH=1`.
+
+## 9. Release prep for 1.0.4
+
+Requested by the maintainer after review round 2. `main` already contained 1.0.3 (`9a9bad2`, PR #2), so 1.0.4
+is exactly the round-2 work (`33b147c`, `8090d18`) plus this prep.
+
+- **Version** 1.0.3 -> 1.0.4 in `metadata.yaml`, the `@register(...)` literal and a new CHANGELOG heading
+  `## 1.0.4 - 2026-10-11` (maintainer's local date, KST). `test_version_is_consistent` checks all three.
+- **CHANGELOG split:** round-2 items had been appended to the 1.0.3 section while 1.0.3 was still unmerged.
+  They were moved into the 1.0.4 section: default `admin_only`, the `/spark forget` guard, and the startup
+  stall. The 1.0.3 test count was restored to 51 -> 67, the count at `c4c1311`; 1.0.4 records 67 -> 71.
+  The 1.0.3 section stays in its trimmed, user-facing form, as review item 3 asked.
+- **AI statement** (README and CHANGELOG header) now says Opus 5.5 worked on 1.0.3 and 1.0.4.
+- **Release branch `v1.0.4`:** created from `origin/main` (`9a9bad2`) with a single commit whose tree is
+  identical to the tip of `claude/keen-bohr-d01us1` (built with `git read-tree -u --reset`; verified with an
+  empty `git diff`). The PR diff therefore contains only the 1.0.4 changes. The per-change history stays on
+  `claude/keen-bohr-d01us1` and in this file. The file set is unchanged from 1.0.3: no files were added or removed.
+- **Note for the next round:** once `v1.0.4` is merged, `claude/keen-bohr-d01us1` is not an ancestor of
+  `main` (the release commit is a squash). Restart the work branch from `main` before new work, so later
+  diffs do not repeat these commits.
