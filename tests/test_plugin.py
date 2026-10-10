@@ -162,9 +162,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         plugin.config['access_mode'] = 'all'
         self.assertTrue(plugin.allowed(event))
         plugin.config['access_mode'] = 'admin_only'
-        event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
-        for handler in (plugin.auto_analyze(event), plugin.spark_command(event), plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')):
-            results = [r async for r in handler]
+        def fresh():
+            event = Event()
+            event.message_str = '帮我分析 https://spark.lucko.me/SyntheticReport001'
+            return event
+        # Auto analysis ignores non-permitted users so other handlers still see the message.
+        event = fresh()
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+        self.assertFalse(event.stopped)
+        for handler in (plugin.spark_command, lambda e: plugin.analyze_tool(e, 'https://spark.lucko.me/SyntheticReport001')):
+            results = [r async for r in handler(fresh())]
             self.assertIn('权限', results[0])
 
     async def test_duplicate_inflight_report_is_quiet(self):
@@ -251,5 +258,54 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await asyncio.gather(*list(plugin.background_tasks))
         self.assertIn('后台结果', sent)
+
+    async def test_tool_fast_failure_does_not_stop_main_event(self):
+        # The tool shares the main agent's event; stopping it aborts the main model's reply.
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {})
+        event, sent = Event(), []
+        async def send(result): sent.append(result)
+        event.send = send
+        result = [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
+        await asyncio.gather(*list(plugin.background_tasks))
+        self.assertIn('后台', result[0])
+        self.assertTrue(any('不会回落' in r for r in sent))
+        self.assertFalse(event.stopped)
+
+    async def test_tool_success_does_not_stop_main_event(self):
+        async def agent(**kwargs): return types.SimpleNamespace(completion_text='后台结果')
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
+        event, sent = Event(), []
+        async def send(result): sent.append(result)
+        event.send = send
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.analyze_tool(event, 'https://spark.lucko.me/SyntheticReport001')]
+            await asyncio.gather(*list(plugin.background_tasks))
+        self.assertIn('后台结果', sent)
+        self.assertFalse(event.stopped)
+
+    async def test_cancel_with_uncancellable_model_task(self):
+        started, stop = asyncio.Event(), asyncio.Event()
+        async def stubborn_agent(**kwargs):
+            started.set()
+            while not stop.is_set():
+                try: await asyncio.wait_for(stop.wait(), 3600)
+                except asyncio.CancelledError: pass
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=stubborn_agent), {'analysis_provider_id':'test'})
+        real = self.module.cancel_bounded
+        async def run():
+            async for _ in plugin.handle(Event(), 'https://spark.lucko.me/SyntheticReport001'): pass
+        try:
+            with patch.object(self.module, 'ReportSession', FakeSession), \
+                 patch.object(self.module, 'cancel_bounded', lambda tasks: real(tasks, timeout=0.05)):
+                runner = asyncio.create_task(run())
+                await asyncio.wait_for(started.wait(), 5)
+                await asyncio.sleep(0.05)
+                runner.cancel()
+                await asyncio.wait({runner}, timeout=5)
+            self.assertTrue(runner.cancelled())
+            self.assertEqual(plugin.tasks, set())
+        finally:
+            stop.set()
+            await asyncio.sleep(0.1)
 
 if __name__ == '__main__': unittest.main()

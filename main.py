@@ -60,6 +60,9 @@ class SparkPlugin(Star):
         links = LINK.findall(text)
         if not links or not re.search(r'分析|诊断|排查|卡顿|掉tps|analy[sz]e', text, re.I):
             return
+        # Silent for non-permitted users so the message still reaches other handlers.
+        if not self.allowed(event):
+            return
         async for result in self.handle(event, text):
             yield result
 
@@ -92,7 +95,7 @@ class SparkPlugin(Star):
             return
         async def run():
             try:
-                async for result in self.handle(event, report_url+' '+observation):
+                async for result in self.handle(event, report_url+' '+observation, stop=False):
                     await event.send(result)
             except asyncio.CancelledError:
                 raise
@@ -103,30 +106,37 @@ class SparkPlugin(Star):
         task.add_done_callback(self.background_tasks.discard)
         yield 'Spark分析已转交插件后台执行，完成后直接发送结果；不要重复提交或自行假设分析结论。'
 
-    async def handle(self, event, text):
+    async def handle(self, event, text, *, stop=True):
+        # stop=False for the tool path: the event belongs to the main chat agent, and
+        # stopping it aborts the main model's reply.
         if not self.allowed(event):
             logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'all'))
             yield event.plain_result('此会话或用户没有Spark分析权限。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         links = list(dict.fromkeys(LINK.findall(text)))
         if len(links) != 1:
             yield event.plain_result('请提供一个 https://spark.lucko.me/报告ID 。可附 server=服务器标签 problem=问题标签；比较时添加 compare。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         provider = str(self.config.get('analysis_provider_id', '')).strip()
         if not provider:
             yield event.plain_result('请先在插件配置选择Spark专用分析模型；不会回落到主聊天模型。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         owner = self.owner(event)
         if links[0] in self.inflight_reports:
             logger.info('Spark duplicate in-flight report skipped')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         if owner in self.active or self.gate.locked():
             yield event.plain_result('已有Spark分析正在执行，请稍后再试。')
-            event.stop_event()
+            if stop:
+                event.stop_event()
             return
         self.active.add(owner)
         self.inflight_reports.add(links[0])
@@ -202,11 +212,11 @@ class SparkPlugin(Star):
                             response = await model_task
                         finally:
                             remaining = await cancel_bounded({model_task})
-                            if remaining:
-                                self.background_tasks.update(remaining)
-                                for task in remaining:
-                                    task.add_done_callback(self.background_tasks.discard)
-                                raise RuntimeError('模型任务未及时取消，停止回退避免重复请求')
+                            # The in-flight exception propagates; `except Exception` below stops
+                            # falling back while a stuck task could still send a duplicate request.
+                            self.background_tasks.update(remaining)
+                            for stuck in remaining:
+                                stuck.add_done_callback(self.background_tasks.discard)
                         result = response.completion_text
                         if not result or not result.strip():
                             raise ValueError('分析模型没有返回文字结论')
@@ -245,7 +255,8 @@ class SparkPlugin(Star):
             self.active.discard(owner)
             self.inflight_reports.discard(links[0])
             self.tasks.discard(task)
-            event.stop_event()
+            if stop:
+                event.stop_event()
             logger.info('Spark [%s] cleanup complete', trace)
 
     async def terminate(self):
