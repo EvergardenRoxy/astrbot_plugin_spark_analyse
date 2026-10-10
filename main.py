@@ -20,7 +20,7 @@ from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
 
 
-@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.2')
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.3')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)

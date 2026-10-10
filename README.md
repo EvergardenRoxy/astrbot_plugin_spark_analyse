@@ -1,11 +1,11 @@
-[![AI Assisted](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](#ai-制作声明) [![AI Assisted](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](#ai-制作声明)
+[![AI Assisted](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](#ai-制作声明) [![AI Assisted](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](#ai-制作声明) [![AI Assisted](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](#ai-制作声明)
 
 <a id="ai-制作声明"></a>
 
 > [!IMPORTANT]
 > **AI 制作声明：Spark 报告分析采用生成式 AI 参与架构设计、编码、文档与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
 >
-> 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与更新日志整理。
+> 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与更新日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 版本的修改方案制定、缺陷修复、测试、配置页说明重写，以及更新日志与交接文档（`handoff.md`）的编写。
 
 # 作者注
 

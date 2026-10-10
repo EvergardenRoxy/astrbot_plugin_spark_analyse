@@ -1,13 +1,15 @@
-[![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
+[![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
 
 > [!IMPORTANT]
-> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
+> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 版本的修改方案制定、缺陷修复、测试、配置页说明重写，以及本日志 1.0.3 部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
 
 # 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## Unreleased
+## 1.0.3 - 2026-10-11
+
+> 本版本由 **Claude Opus 5.5**（通过 **Claude Code**）依据审查意见完成修改，经项目维护者审阅。每项修改的思路、依据与验证方式记录在 [handoff.md](handoff.md)。
 
 ### 修复
 
@@ -22,6 +24,8 @@
 
 ### 变更
 
+- **版本号升至 1.0.3**：`metadata.yaml`、插件注册信息和打包脚本输出的文件名同步更新。
+- **仓库文档**：新增 `handoff.md`，记录每次 AI 修改的思路、依据与验证方式，供后期调试与审查。审查意见（`AUDIT_FINDINGS.md`）与修改方案（`FIX_PLAN.md`）两份过程文档已移出仓库，可在 git 历史中查看。
 - **工具模式下主聊天模型不再额外回复**：`spark_analyze` 工具此前会返回“已转交后台”的文字，AstrBot 随后再调用一次主聊天模型，让它根据这段文字写一句回复。现在工具不返回内容，AstrBot 在工具调用后直接结束这一轮，不再调用主模型；开始提示和分析结论都由插件直接发送。这也避免了插件已提示“未配置模型”、主模型却回复“已提交，请稍候”这类前后矛盾的情况。同一份报告正在分析时再次调用工具，插件会提示“正在分析中”，不会毫无回应。无权限时工具仍返回权限说明，由主模型转告用户。在 AstrBot 4.27.0 以前的版本中，这样结束的一轮对话不会写入主聊天模型的对话历史（不影响分析本身）。
 - **配置页重写**：所有配置项的名称和说明改为更直白的中文，并按“模型 → 谁能用 → 怎么触发 → 回复内容 → 数据保存 → 网络”的顺序重新排列；“谁可以使用”的选项显示为“仅管理员 / 管理员和指定用户 / 所有人”；“分析模型”标记为重点项。配置项的键名、类型和默认值都没有变，已有配置不受影响。README“常用设置”同步更新。
 - **自动分析对无权限用户保持沉默**：此前在 `admin_only` 等模式下，任何无权限用户发送“链接 + 分析/卡顿等关键词”的消息，都会收到“没有Spark分析权限”的回复，消息也被插件拦截，其他插件和默认聊天模型都看不到。现在自动分析直接忽略这类消息；显式的 `/spark` 命令和 `spark_analyze` 工具仍会回复权限提示。
@@ -47,7 +51,6 @@
 
 ### 未改动
 
-- 版本号仍为 1.0.2，由维护者发版时更新。
 - 未新增或删除配置项，键名、类型和默认值不变；依赖（`requirements.txt`）未改动。
 - 下载安全限制未放宽。
 

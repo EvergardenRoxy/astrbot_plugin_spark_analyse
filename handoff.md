@@ -9,10 +9,10 @@ CHANGELOG for that).
 | Item | Value |
 |---|---|
 | Base | `main` @ `e15f67f` (v1.0.2) |
-| Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status) |
+| Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | Not bumped. Changes are under `## Unreleased` in `CHANGELOG.md`. |
+| Version | 1.0.3 (see §7). Changes are under `## 1.0.3 - 2026-10-11` in `CHANGELOG.md`. |
 | Tests | 51 -> 67, all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
@@ -29,6 +29,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `32eaeea` | F8 (tooling, CI, `sys.path` fix, version test) |
 | `f11fcfd` | Tool returns no value; duplicate notice on tool path |
 | `4a1fd87` | Config page rewrite and reorder (`_conf_schema.json`, README) |
+| `9c2099e` | This file rewritten as an English engineering record |
+| `c47cc0f` | Maintainer's own README edit (author note); not touched afterwards |
+| last commit | Release prep for 1.0.3 (§7) |
 
 ## 2. Changes, reasoning, evidence
 
@@ -186,9 +189,9 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 
 - Deleted `tools/release_descriptions.py`: its assert failed against the current schema, and it would have
   overwritten newer text.
-- `tools/package_plugin.py` reads `^version:` from `metadata.yaml` (regex; no PyYAML). The output name is
-  still `astrbot_plugin_spark-v1.0.2.zip`. The zip uses an explicit file list:
-  `AUDIT_FINDINGS.md`, `FIX_PLAN.md`, `handoff.md` and `CHANGELOG.md` are not packaged (`README.md`,
+- `tools/package_plugin.py` reads `^version:` from `metadata.yaml` (regex; no PyYAML). The output name
+  follows it (`astrbot_plugin_spark-v1.0.3.zip` now). The zip uses an explicit file list:
+  `handoff.md` and `CHANGELOG.md` are not packaged (`README.md`,
   `THIRD_PARTY.md` and `analysis_policy.md` are).
 - `test_version_is_consistent`: `metadata.yaml` (leading `v` stripped) == the `@register` literal == the
   first `## X.Y.Z - ` heading in CHANGELOG. `## Unreleased` does not match that pattern by design.
@@ -231,7 +234,9 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 ## 5. Open items
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
-- Version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by test).
+- Merge `v1.0.3` into `main`: no PR was created; that is the maintainer's call.
+- Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
+  `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
 - Audit §5 Q3 (strict child > parent rejection may refuse valid reports from other Spark builds): untouched.
 
@@ -245,3 +250,24 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Never call `stop_event()` on the tool path. Never return text from `analyze_tool`'s success path without
   re-reading §2.2, since doing so brings back the extra main-model call.
 - Config schema: keys, types and defaults are a compatibility surface for existing installs. Change only display fields.
+
+## 7. Release prep for 1.0.3
+
+Requested by the maintainer after reviewing the branch. Done on `claude/keen-bohr-d01us1`; branch `v1.0.3` was
+then created at the same commit (the naming follows the existing `v1.0.2` release branch).
+
+- **Version** 1.0.2 -> 1.0.3 in the three hand-edited places: `metadata.yaml` (`version: v1.0.3`), the
+  `@register(...)` literal in `main.py`, and the CHANGELOG heading (`## Unreleased` -> `## 1.0.3 - 2026-10-11`;
+  the date is the maintainer's local date, KST). `tools/package_plugin.py` derives the zip name from `metadata.yaml`.
+  The CHANGELOG line "version still 1.0.2" under 未改动 was replaced by a "version bumped" line under 变更.
+- **Files kept:** plugin runtime files (`main.py`, `spark_core/`, `metadata.yaml`, `_conf_schema.json`,
+  `requirements.txt`, `analysis_policy.md`, `reply_prompt.txt`, `logo.png`), docs/legal (`README.md`,
+  `CHANGELOG.md`, `LICENSE`, `THIRD_PARTY.md`), dev tooling (`tools/`, `.github/workflows/tests.yml`,
+  `.gitignore`), `tests/` and this file. **Removed:** `AUDIT_FINDINGS.md` and `FIX_PLAN.md` (process
+  documents, still in git history; see §1). `tools/` and CI were judged necessary: packaging, protobuf
+  regeneration and the test gate depend on them.
+- **AI statement:** README and CHANGELOG now name Claude Opus 5.5 (via Claude Code) next to the existing
+  Codex / Sonnet 5.5 entries, with a badge in the same style, plus a one-line note at the top of the 1.0.3
+  CHANGELOG section that points here. The model was confirmed from the session metadata (configured and
+  last-served model both Opus 5.5) before writing it. The maintainer's own "作者注" block in README
+  (`c47cc0f`) was left verbatim.
