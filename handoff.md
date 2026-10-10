@@ -13,8 +13,8 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.5 (§13), merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Version | 1.0.6 (§16) on the work branch; no release branch yet. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`. |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -41,7 +41,8 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `b9f0466` | Reorientation: quick triage, multi-platform wait rule, oversized-report messages (§12) |
 | `170f6d2` | Release prep for 1.0.5 (§13). Branch `v1.0.5` holds the same tree as one commit on `v1.0.4`. |
 | `39331aa` | Merge of `main` (PR #3) into the work branch; tree unchanged (§13) |
-| last commit | `checklist.md` split (§14); review round 3 findings verified and proposals recorded, not implemented (§15) |
+| `8290b71` | `checklist.md` split (§14); review round 3 findings verified and proposals recorded (§15) |
+| last commit | Review round 3 implemented, version 1.0.6 (§16) |
 
 ## 2. Changes, reasoning, evidence
 
@@ -233,12 +234,13 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | Triage, prompts, legacy migration (§10, §12) | all of `tests/test_briefing.py`; legacy and payload tests in `tests/test_plugin.py` |
 | Report data (§10, §12) | `test_core.py`: world statistics, window counts, `test_wait_time_counts_outermost_wait_frames`, `test_platform_brand_is_reported` |
 | Oversized-report message (§12) | `test_oversized_report_message_explains_the_remedy` |
+| Round 3 (§16) | `test_stuck_model_task_blocks_fallback`, `test_compare_keyword_is_a_whole_word`, `test_compare_ignores_derived_problem_tag`, `test_skipped_comparison_is_explained`, `test_auto_analyze_keywords` |
 
 ## 4. How to re-verify
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 99 OK
+python -m unittest discover -s tests        # expect 104 OK
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
@@ -249,11 +251,23 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
    the conversation history contains the turn (>= 4.27.0).
 2. Tool mode with no provider configured: only the plugin's message appears; no "Output stopped." in history.
 3. The config page renders the Chinese option labels and the ‼️ marker; check on the oldest AstrBot version you support.
+4. Replies from a real analysis model follow the reply prompt: 3-5 sentences for a healthy report; otherwise
+   现状 / 疑似问题点 / 建议先做的检查 within ~800 characters, ending with the pointer to experienced people.
+5. A Paper, Folia or Leaf report gets advice that fits that server, with no mod-server remedies.
+6. An oversized (multi-hour) report shows the "采样时间太长" message with `--timeout 300` in chat.
+7. A saved legacy default `analysis_prompt` is replaced by the current default on load and shown on the config page;
+   custom text is kept.
+8. 1.0.6: `compare` with history disabled, or with no earlier record, ends the result with the
+   "未进行历史对比：…" note; a second analysis of the same server with different wording and no `problem=` compares.
 
 ## 5. Open items
 
 - F7 (a real report id in old commits): needs a maintainer decision; rewriting requires a force-push.
-- Review round 3 (§15): five findings verified; proposals await the maintainer's decision.
+- Review round 3: R3-1, R3-4 and R3-5 implemented (§16). R3-3 declined by the maintainer: spark keeps a report
+  for only about 3 days (depending on size), so a logged id soon stops working. R3-2 (parse `MemoryError`
+  message, §15) was not taken up and stays open.
+- 1.0.6 is on the work branch only (§16); no release branch has been cut. The maintainer called the version
+  bump temporary.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
@@ -282,6 +296,9 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Load thresholds live only in `spark_core/briefing.py`. Prompt files refer to `triage.load` / `triage.spikes` /
   `triage.wait_kind`
   and must not restate the numbers (CHANGELOG may, as a record).
+- `checklist.md` is public and written for users and reviewers. Keep maintainer-directed content out of it:
+  pre-release manual checks, "not verified live" notes, F7, pending decisions and roadmap. Those live here (§4,
+  §5).
 - Every file `main.py` reads with `with_name(...)` must be in `tools/package_plugin.py`'s list
   (`test_prompt_files_are_packaged`); otherwise the release zip crashes at load.
 - Default access is `admin_only`. The code fallback (`config.get('access_mode', 'admin_only')`, 3 places in
@@ -620,10 +637,13 @@ create branch `v1.0.5`. 1.0.5 is §10-§12 (`e07adbe`, `af5fd32`, `b9f0466`) plu
 Maintainer request: `handoff.md` stays the machine-oriented record of what was done each time; a new
 `checklist.md` explains the work to users and repository reviewers in plain language.
 
-- `checklist.md` (Chinese, like README and CHANGELOG): role of each record file; current state; how to run the
-  checks; the manual pre-release checks as a checkbox list (same items as §4 plus the §10/§12 prompt and
-  platform checks); the boundaries the plugin keeps (§6 in user terms); per-version "why / what / how to check"
-  for 1.0.3-1.0.5; known limitations (§5).
+- `checklist.md` (Chinese, like README and CHANGELOG): role of each record file; current version and test count;
+  how to run the checks; the boundaries the plugin keeps (§6 in user terms); per-version "why / what / how to
+  check"; user-facing limitations.
+- Maintainer feedback on the first version: the file is public, so it must not address the maintainer. Removed
+  in §16: the "not run on a real AstrBot" and "prompts not tested with a real model" notes, the pre-release
+  checkbox list (moved to §4, items 4-8), the F7 note, the "maintainer decided" wording, the shelved phase 2 and
+  the pending round-3 list.
 - It cites no real report link or id (F7). Compatibility numbers come from §12; the memory figure comes from §15.
 - It is a repository document only: not in `tools/package_plugin.py`'s list, so not shipped in the zip.
 - CHANGELOG gets an `## Unreleased` line for it. The maintainer's README author note is left verbatim.
@@ -631,6 +651,8 @@ Maintainer request: `handoff.md` stays the machine-oriented record of what was d
   checks or limitations if they move.
 
 ## 15. Review round 3 (verified; proposals only, not implemented)
+
+Outcome: R3-1, R3-4 and R3-5 implemented in §16; R3-3 declined; R3-2 left open (§5).
 
 The maintainer passed on five review findings: check them, propose fixes, implement after their review. All
 five reproduce on `39331aa`. The proposals add no features. Suggested order: R3-5, R3-3, R3-1, R3-2, then R3-4
@@ -706,3 +728,83 @@ fallback loop, cancellation, cleanup).
 - Verified: `analy[sz]e` does not match "analysis".
 - Proposal: `analy(?:[sz]e|sis)`, plus a test case. The config hint lists only Chinese examples and "等", so it
   needs no edit.
+
+## 16. Review round 3 implementation (1.0.6)
+
+**Maintainer decisions** on §15:
+- R3-1: fix as reviewed.
+- R3-3: not needed. Spark keeps a report for only about 3 days (depending on size), so a logged id soon stops
+  working.
+- R3-4: do it.
+- R3-5: do it.
+- R3-2: not mentioned; left open.
+- Delivery: everything in one go, version temporarily 1.0.6, not committed or pushed.
+- `checklist.md` must not address the maintainer (§14).
+
+**`main.py`:**
+- Module constants: `AUTO_KEYWORDS` (adds "analysis": `analy(?:[sz]e|sis)`), `COMPARE`, `HISTORY_ERRORS`.
+  - `COMPARE` matches `compare` only as a standalone ASCII word: `(?<![A-Za-z0-9_])compare(?![A-Za-z0-9_])`,
+    case-insensitive. `\b` would fail on "调整后compare".
+- `handle()` went from about 180 to 76 lines. Helpers:
+  - `providers()`: primary plus fallbacks, `[]` without a primary.
+  - `refusal()`: returns a message, `''` for a silent refusal, or `None` to proceed.
+  - `new_session()`.
+  - `tags()`: a dict with `server`, `problem`, `problem_typed` and `typed`.
+  - `comparison()`: returns `(comparison, previous_result, None)` or `(None, None, reason)`.
+  - `query_tool()`: built fresh for each attempt; the `calls` list replaces the old `nonlocal` counter that was
+    reset per attempt.
+  - `ask()`: one provider attempt.
+  - `save_history()`.
+  - `footnotes()`.
+- `ask()` returns `(reply, None, False)` or `(None, error, stuck)` instead of raising. The caller needs both the
+  original exception, re-raised unchanged so chat still shows its type (§2.4), and whether `cancel_bounded` left
+  the task running. A wrapper exception would change the type shown in chat.
+- Kept unchanged:
+  - Refusal order and stop semantics, including the duplicate-report notice on the tool path only.
+  - Every chat text and log line.
+  - The no-fallback-while-stuck guard.
+  - History failures degrade instead of failing the analysis.
+- Small differences:
+  - `providers()` is read before the report loads instead of after. A config save reloads the plugin, so the
+    value cannot change in between.
+  - History is read only when `compare` is present. Before, every analysis with a server tag read it and threw
+    the rows away.
+
+**Compare (R3-1):**
+- Matching:
+  - Without a typed `problem=`, matches on owner and server only: `History.list(owner, server, '')`, newest first.
+  - A typed `problem=` still has to match exactly.
+  - Saved rows keep the derived problem tag.
+- When `compare` is asked and no comparison is made, there is one reason:
+  - history disabled;
+  - no server tag (add `server=`);
+  - history unreadable (still logged as `history comparison skipped`);
+  - no matching record within 30 days.
+- The reason reaches chat as `\n（未进行历史对比：<reason>。）`, before the existing saved-result note. It reaches
+  the model as `history_comparison_unavailable`, a new optional parameter of `briefing.user_payload()`, `null`
+  otherwise.
+- `analysis_policy.md` rule 7 gains one sentence: an empty `history_comparison` means no comparison was made,
+  so none may be invented; the plugin reports the reason, so the reply need not repeat it.
+
+**Tests (99 -> 104):**
+- `test_stuck_model_task_blocks_fallback`: written before the refactor. It passed on the old code (it pins the
+  §2.4 guard), and the refactor kept it passing.
+- These failed on the old code and pass now: `test_compare_keyword_is_a_whole_word`,
+  `test_compare_ignores_derived_problem_tag`, `test_skipped_comparison_is_explained`,
+  `test_auto_analyze_keywords`.
+- Expectations changed for the intended behaviour; the test `Event`'s default message contains `compare`:
+  - `test_scheduler_does_not_stop_after_progress` now expects the history-disabled note.
+  - `test_history_save_failure_keeps_result` checks `startswith` and that the saved-result note is absent.
+  - `test_history_lookup_failure_skips_comparison` also expects the read-failure note.
+- `pyflakes` was clean on `main.py`, `spark_core/` and `tests/test_plugin.py`.
+
+**Docs:**
+- README: `compare` as a word, the matching rule, and the note.
+- CHANGELOG: `## 1.0.6 - 2026-10-11`, which absorbed the `checklist.md` line from `## Unreleased`.
+- `checklist.md`: public-only content and a 1.0.6 section.
+- AI statement: now says 1.0.3 to 1.0.6.
+- §4 gained the manual checks moved out of `checklist.md`.
+
+**Delivery:** at the maintainer's request, nothing was committed at first. They received
+`dist/astrbot_plugin_spark-v1.0.6.zip` and a patch against `8290b71`. On their next instruction the same changes
+were committed to `claude/keen-bohr-d01us1`; the commit equals the patch plus these handoff status edits.
