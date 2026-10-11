@@ -8,7 +8,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Reply
+from astrbot.api.message_components import File
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
@@ -150,7 +150,7 @@ class SparkPlugin(Star):
         '''把Spark性能报告交给插件分析。插件在后台下载报告并用专用分析模型分析，进度和结论会直接发给用户；本工具没有返回内容，调用后不要重复调用，也不要自己推测分析结论。
 
         Args:
-            report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID。用户发送或引用的是 .sparkprofile 文件时留空，插件直接读取该文件。
+            report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID。用户在这条消息中附带 .sparkprofile 文件时留空，插件直接读取该文件；引用消息里的文件不会读取。
             observation(string): 用户描述的现象，可选。可附 server=服务器标签、problem=问题标签；需要与上次结果对比时加 compare。
         '''
         if not self.allowed(event):
@@ -265,17 +265,11 @@ class SparkPlugin(Star):
     def sources(event, text):
         """The reports a request names: ('link', report id) and ('file', File) entries.
 
-        A file in the quoted message counts only when the message itself names no report: QQ cannot send text
-        with a file, so /spark is sent as a reply to the file message.
+        Only files attached to this message count. A quoted message's files are rebuilt by the adapter from a
+        second request (OneBot get_msg), and whether their name and URL survive depends on the implementation.
         """
-        chain = event.get_messages()
         found = [('link', key) for key in dict.fromkeys(LINK.findall(text))]
-        found += [('file', component) for component in report_files(chain)]
-        if not found:
-            for quoted in chain:
-                if isinstance(quoted, Reply):
-                    found += [('file', component) for component in report_files(quoted.chain)]
-        return found
+        return found + [('file', component) for component in report_files(event.get_messages())]
 
     @staticmethod
     def report_key(source):
@@ -289,7 +283,7 @@ class SparkPlugin(Star):
             logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'admin_only'))
             return '此会话或用户没有Spark分析权限。'
         if len(sources) != 1:
-            return ('请提供一个 https://spark.lucko.me/报告ID ，或一个 .sparkprofile 文件（不能给文件附文字时，回复文件消息发送 /spark）。'
+            return ('请提供一个 https://spark.lucko.me/报告ID ，或在同一条消息中附上一个 .sparkprofile 文件（不读取引用消息里的文件）。'
                     '可附 server=服务器标签 problem=问题标签；比较时添加 compare。')
         if not providers:
             return '请先在插件配置中选择“分析模型”；不会回落到主聊天模型。'

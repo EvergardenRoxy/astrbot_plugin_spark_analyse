@@ -670,28 +670,45 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r async for r in plugin.auto_analyze(self.file_event(File('a.sparkprofile', url='https://files.example/a')))], [])
         self.assertEqual(FakeSession.loaded, [])
 
-    async def test_command_reads_file_in_quoted_message(self):
+    async def test_command_reads_file_in_same_message(self):
+        # Telegram captions and Discord messages carry the command and the file together.
         captured = {}
         async def agent(**kwargs):
             captured.update(kwargs)
-            return types.SimpleNamespace(completion_text='引用文件结论')
+            return types.SimpleNamespace(completion_text='文件结论')
         plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
-        event = self.file_event(Reply([File('a.sparkprofile', file='/data/a.sparkprofile')]), text='/spark 掉TPS')
+        event = self.file_event(File('a.sparkprofile', file='/data/a.sparkprofile'), text='/spark 掉TPS')
+        # The auto handler steps aside for the command, even with nothing after /spark.
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+        self.assertEqual([r async for r in plugin.auto_analyze(self.file_event(File('b.sparkprofile', file='/b'), text='spark'))], [])
         with patch.object(self.module, 'ReportSession', FakeSession):
             results = [r async for r in plugin.spark_command(event)]
-        self.assertEqual(results[-1], '引用文件结论')
+        self.assertEqual(results[-1], '文件结论')
         self.assertEqual(FakeSession.loaded[0], ('file', '/data/a.sparkprofile', ''))
         self.assertEqual(self.module.json.loads(captured['prompt'])['user_observation'], '掉TPS')
-        # The auto handler steps aside for the command, even with nothing after /spark.
-        self.assertEqual([r async for r in plugin.auto_analyze(self.file_event(File('b.sparkprofile', file='/b'), text='spark'))], [])
 
-    async def test_quoted_file_ignored_when_message_names_a_report(self):
+    async def test_quoted_files_are_never_read(self):
+        # A quoted message's file is rebuilt by the adapter (OneBot get_msg); its name is not reliable (§18.2).
         async def agent(**kwargs): return types.SimpleNamespace(completion_text='ok')
         plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
-        event = self.file_event(Reply([File('old.sparkprofile', url='https://files.example/old')]),
-                                text='/spark https://spark.lucko.me/SyntheticReport001')
+        quoted = lambda: Reply([File('a.sparkprofile', url='https://files.example/a')])
         with patch.object(self.module, 'ReportSession', FakeSession):
-            [r async for r in plugin.spark_command(event)]
+            results = [r async for r in plugin.spark_command(self.file_event(quoted(), text='/spark 掉TPS'))]
+            self.assertIn('请提供一个', results[-1])
+            self.assertIn('不读取引用消息里的文件', results[-1])
+            for text in ('这个服务器的JVM参数合适吗', '帮我分析服务器运行状况'):
+                with self.subTest(text=text):
+                    event = self.file_event(quoted(), text=text)
+                    self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+                    self.assertFalse(event.stopped)
+            event, sent = self.file_event(quoted(), text='分析一下'), []
+            async def send(result): sent.append(result)
+            event.send = send
+            [r async for r in plugin.analyze_tool(event)]
+            await asyncio.gather(*list(plugin.background_tasks))
+            self.assertIn('不读取引用消息里的文件', sent[-1])
+            # A link in the message is still the report.
+            [r async for r in plugin.spark_command(self.file_event(quoted(), text='/spark https://spark.lucko.me/SyntheticReport001'))]
         self.assertEqual(FakeSession.loaded, [('link', 'https://spark.lucko.me/SyntheticReport001')])
 
     async def test_more_than_one_report_is_rejected(self):

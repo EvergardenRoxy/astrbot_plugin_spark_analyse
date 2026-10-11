@@ -267,11 +267,11 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 8. 1.0.6: `compare` with history disabled, or with no earlier record, ends the result with the
    "未进行历史对比：…" note; a second analysis of the same server with different wording and no `problem=` compares.
 9. §18, QQ (NapCat): a permitted user's `.sparkprofile` file gets the ack and an analysis; a non-permitted
-   member's file gets nothing; replying `/spark 现象` to a file message analyses it (needs the OneBot
-   implementation to answer `get_msg` and `get_group_file_url` / `get_private_file_url`). The first live
-   test (§18.1) passed the file and fake-file cases; the `/spark` reply case has not been tried yet.
+   member's file gets nothing (the first live test, §18.1, passed the file and fake-file cases). §18.2: a reply
+   to a file message with `/spark 测试` gets the refusal ending in "不读取引用消息里的文件", and a reply without
+   `/spark` gets nothing.
 10. §18, Telegram or Discord: a file sent with the caption `/spark 现象` goes through the command, with
-    `现象` as the observation.
+    `现象` as the observation. Not tried live on any platform other than QQ yet.
 11. §18, tool mode (auto analysis off): the main model calls `spark_analyze` without `report_url` for a
     message carrying a `.sparkprofile` file, and the plugin analyses the file.
 
@@ -283,9 +283,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   message, §15) was not taken up and stays open.
 - `v1.0.6` was merged into `main` (PR #4, `654e24e`).
 - `.sparkprofile` support (§18): unreleased; the version bump (`metadata.yaml`, `@register`, CHANGELOG heading)
-  and the live checks (§4 items 9-11) are the maintainer's. Not implemented, by choice: auto analysis for a
-  keyword reply to a file message (only `/spark` reads quoted files), links in quoted messages, gzip-compressed
-  files, caching files.
+  and the live checks (§4 items 9-11) are the maintainer's. Not implemented, by choice: reading files or links
+  in quoted messages (maintainer decision, §18.2), gzip-compressed files, caching files.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
@@ -324,6 +323,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   (`test_prompt_files_are_packaged`); otherwise the release zip crashes at load.
 - Default access is `admin_only`. The code fallback (`config.get('access_mode', 'admin_only')`, 3 places in
   `main.py`) must match the schema default; `test_default_access_is_admin_only` checks both.
+- Only files attached to the message itself are reports. Never read a quoted message's files (`Reply.chain`)
+  on any path without a new maintainer decision (§18.2); `test_quoted_files_are_never_read` pins it.
 
 ## 7. Release prep for 1.0.3
 
@@ -866,7 +867,7 @@ sample (NeoForge 21.1.251, MC 1.21.1, 33 s, 1 thread, 8,239 nodes, 1.1 MiB) star
   files in a quoted message (`Reply.chain`) only when the message itself names nothing. Reason: QQ (OneBot)
   cannot attach text to a file, so `/spark 现象` is sent as a reply. aiocqhttp resolves replies by default
   (`get_reply=True`, `aiocqhttp_platform_adapter.py:201`) and resolves the quoted message's file segment too, so
-  `Reply.chain` carries a `File(name, url)`.
+  `Reply.chain` carries a `File(name, url)`. **Superseded by §18.2: quoted files are no longer read.**
 - `refusal()` now takes the sources. None, or more than one (including a link plus a file), gives the existing
   "请提供一个…" message, which now mentions files. A link plus a file is refused rather than guessed.
 - `report_key()`: in-flight key and log label. For a file it is `file:<name[:80]>`; the name is user text, so it
@@ -874,7 +875,8 @@ sample (NeoForge 21.1.251, MC 1.21.1, 33 s, 1 thread, 8,239 nodes, 1.1 MiB) star
 - `auto_analyze`:
   - An attachment in the message itself triggers without a keyword (QQ files carry no text). Links still need a
     keyword.
-  - Quoted files do not trigger it: replying "分析一下" to a file message does nothing; `/spark` does.
+  - Quoted files do not trigger it: replying "分析一下" to a file message does nothing; `/spark` does (no
+    longer, §18.2).
   - Non-permitted senders stay silent (§2.3).
   - The `/spark` early return is now `re.match(r'spark(?:\s|$)', text.lstrip('/'))`, matching AstrBot's
     `CommandFilter`, which collapses whitespace (`star/filter/command.py:199-202`, same in 4.16.0). Before,
@@ -945,7 +947,8 @@ sample (NeoForge 21.1.251, MC 1.21.1, 33 s, 1 thread, 8,239 nodes, 1.1 MiB) star
   undecodable file message; labeled fetch timeout.
 - `tests/test_plugin.py` (+8): attachment triggers without a keyword (and is logged by name only); other
   attachments, non-permitted senders and the off switch are ignored; `/spark` reads a quoted file and auto
-  analysis steps aside for `spark`; a link in the message wins over a quoted file; more than one report is
+  analysis steps aside for `spark`; a link in the message wins over a quoted file (these two replaced in
+  §18.2); more than one report is
   refused; the tool path reads the file without `report_url`; a duplicate in-flight file is quiet;
   `attachment()` field handling.
 - Harness: the test `Event` has `get_messages()`; `File` and `Reply` doubles are registered as
@@ -976,10 +979,58 @@ The maintainer ran §18 on AstrBot 4.28.2 with aiocqhttp (QQ group, NapCat):
 **Reverted** at the maintainer's request, back to the §18 behaviour (tree identical to `212b33a`). Reasons given:
 1. Any reply from a permitted user to a `.sparkprofile` message would start an analysis.
 2. NapCat's `get_msg` response. The quoted `File` comes from aiocqhttp's reply resolution (`get_msg`, then the
-   file segment, `aiocqhttp_platform_adapter.py:253-266`), and its name comes from `file_name`, `name` or
+   file segment, `aiocqhttp_platform_adapter.py:254-301`), and its name comes from `file_name`, `name` or
    `file`, falling back to `"file"`. Whether NapCat's payload gives a `.sparkprofile` name is unverified.
 
-**Still open (maintainer decision pending):** `/spark` sent as a reply still reads the quoted file
-(`sources()`), and so does `spark_analyze`. Reason 1 does not apply there (an explicit command is needed), but
-reason 2 does. If the name is lost, `/spark` gets the visible "请提供一个…" refusal, not silence. Options put to
-the maintainer: keep it and verify it live, or remove quoted-file reading entirely.
+**Open question after the revert:** `/spark` sent as a reply still read the quoted file (`sources()`), and so
+did `spark_analyze`. Reason 1 does not apply there (an explicit command is needed), but reason 2 does. Options
+put to the maintainer, with pros and cons: A, keep it and verify it live; B, remove quoted-file reading
+entirely. The maintainer chose B (§18.2).
+
+### 18.2 Quoted files are never read (maintainer decision, option B)
+
+**Decision.** Of the two options in §18.1, the maintainer chose B: only files attached to the message itself
+count, on every path (`/spark`, auto analysis, `spark_analyze`). The maintainer also asked for the compatibility
+consequences to be stated in README, `checklist.md` and here.
+
+**Change (`main.py`):**
+- `sources()` returns links in the text plus `.sparkprofile` files of `event.get_messages()`. It no longer looks
+  into `Reply.chain`, and `Reply` is no longer imported. `auto_analyze` already read only the message's own
+  files, so it is unchanged.
+- The refusal for none or several reports now says
+  "…或在同一条消息中附上一个 .sparkprofile 文件（不读取引用消息里的文件）…", so a `/spark` reply to a file
+  message explains itself instead of pointing back to the reply method.
+- The `spark_analyze` docstring tells the model that only a file attached to this message is read.
+
+**Compatibility.** Why quoted files are not read:
+- A quoted message's components are not the original message. The adapter rebuilds them from a second request:
+  aiocqhttp calls `get_msg` and re-parses the file segment (`aiocqhttp_platform_adapter.py:254-301` for files,
+  `:303-343` for replies). The name falls back through `file_name`, `name` and `file` to `"file"`. Whether a
+  given OneBot implementation (NapCat, Lagrange, …) returns a usable name and download URL there is
+  unverified, and an unrecognised name means the file is silently not a report.
+- A reply trigger without `/spark` would start an analysis for any reply from a permitted user (§18.1, reason 1).
+
+What that means per platform:
+
+| Platform | Analysing a `.sparkprofile` | Adding an observation or question |
+|---|---|---|
+| QQ via OneBot (NapCat, Lagrange) | Only by auto analysis when the file is sent ("自动识别报告链接" must be on). A QQ file message carries no text, so `/spark` cannot accompany it. | Not possible for files; use a report link with the question instead. |
+| Telegram (caption), Discord (message text) | Auto analysis, or `/spark 现象` in the same message as the file, which works with auto analysis off. | `/spark 现象` in the same message. |
+| Platforms giving a local path (webchat, Lark, DingTalk, WeCom, …) | Same rule: the file must be in the message. | Depends on whether the platform sends text with a file. |
+| `spark_analyze` (tool mode) | Only a file attached to the message the main model is handling. | The model's `observation`. |
+
+Live evidence so far: QQ group, NapCat, AstrBot 4.28.2 (§18.1): sending a file works. No other platform has
+been tried.
+
+**Tests (still 125):** `test_command_reads_file_in_quoted_message` and
+`test_quoted_file_ignored_when_message_names_a_report` were replaced:
+- `test_command_reads_file_in_same_message`: `/spark 掉TPS` with the file in the same message (Telegram/Discord
+  shape) loads the file with the text as the observation, and auto analysis steps aside for it.
+- `test_quoted_files_are_never_read`: a `/spark` reply to a file gets the new refusal; plain replies (the
+  live-test texts) are ignored and the event is not stopped; the tool path gets the refusal; a link in a reply
+  that quotes a file still loads only the link. It failed on the §18 code and passes now, on Python 3.12 and
+  3.13.
+
+**Docs:** README "兼容性说明" under the file section, plus the tool paragraph; the `auto_analyze` hint (QQ needs it
+on to analyse files); CHANGELOG `## Unreleased`; `checklist.md` item 4 and "已知限制"; §4 items 9-10, §5 and §6
+here.

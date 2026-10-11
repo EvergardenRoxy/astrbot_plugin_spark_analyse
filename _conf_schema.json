@@ -59,7 +59,7 @@
     "type": "bool",
     "description": "自动识别报告链接",
     "default": true,
-    "hint": "开启后，有权限的人在聊天中发送 Spark 报告链接，并提到“分析”“诊断”“排查”“卡顿”“掉TPS”等词时，自动开始分析，不需要 @ 机器人；发送 .sparkprofile 文件时直接开始分析。关闭后可以用 /spark 命令（分析文件时回复该文件消息发送），或让聊天模型调用 spark_analyze 工具。"
+    "hint": "开启后，有权限的人在聊天中发送 Spark 报告链接，并提到“分析”“诊断”“排查”“卡顿”“掉TPS”等词时，自动开始分析，不需要 @ 机器人；发送 .sparkprofile 文件时直接开始分析。关闭后可以用 /spark 命令（文件须与命令在同一条消息中，不读取引用消息里的文件），或让聊天模型调用 spark_analyze 工具。QQ 发送文件时不能附文字，要分析 QQ 里的文件必须开启本项。"
   },
   "acknowledgement_text": {
     "type": "text",
