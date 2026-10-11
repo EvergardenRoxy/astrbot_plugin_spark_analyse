@@ -15,7 +15,7 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). 1.0.7 (`.sparkprofile` support, §18) on `claude/charming-archimedes-e9je76`, release branch `v1.0.7` (§19), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`, `v1.0.7`. |
 | Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
-| AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run by the agent**; the maintainer ran §18 live on 4.28.2 (§18.1). |
+| AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run by the agent**; the maintainer ran §18 live on 4.28.2 (§18.1) and tested 1.0.7 in a QQ group (§20). |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
 
@@ -50,7 +50,8 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `212b33a` | `.sparkprofile` file support (§18), on `main` @ `654e24e`, branch `claude/charming-archimedes-e9je76` |
 | `d2a9b8e`, `14db7ef` | Reply trigger, then its revert (§18.1); net change none |
 | `956fd34` | Quoted files are never read (§18.2) |
-| last commit | Release prep for 1.0.7 (§19). Branch `v1.0.7` holds the same tree as one commit on `main`. |
+| `43f4241` | Release prep for 1.0.7 (§19). Branch `v1.0.7` holds the same tree as one commit on `main` (`adea22f`). |
+| last commit | Independent review findings verified and documented; stale "untested" notes removed (§20). Also on `v1.0.7` as a second commit. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -256,27 +257,11 @@ python tools/package_plugin.py && rm -rf dist
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
 ```
 
-**Not yet verified live (do this before release):**
-1. Tool mode: after `spark_analyze`, the main model sends nothing further; the plugin's ack and result arrive;
-   the conversation history contains the turn (>= 4.27.0).
-2. Tool mode with no provider configured: only the plugin's message appears; no "Output stopped." in history.
-3. The config page renders the Chinese option labels and the ‼️ marker; check on the oldest AstrBot version you support.
-4. Replies from a real analysis model follow the reply prompt: 3-5 sentences for a healthy report; otherwise
-   现状 / 疑似问题点 / 建议先做的检查 within ~800 characters, ending with the pointer to experienced people.
-5. A Paper, Folia or Leaf report gets advice that fits that server, with no mod-server remedies.
-6. An oversized (multi-hour) report shows the "采样时间太长" message with `--timeout 300` in chat.
-7. A saved legacy default `analysis_prompt` is replaced by the current default on load and shown on the config page;
-   custom text is kept.
-8. 1.0.6: `compare` with history disabled, or with no earlier record, ends the result with the
-   "未进行历史对比：…" note; a second analysis of the same server with different wording and no `problem=` compares.
-9. §18, QQ (NapCat): a permitted user's `.sparkprofile` file gets the ack and an analysis; a non-permitted
-   member's file gets nothing (the first live test, §18.1, passed the file and fake-file cases). §18.2: a reply
-   to a file message with `/spark 测试` gets the refusal ending in "不读取引用消息里的文件", and a reply without
-   `/spark` gets nothing.
-10. §18, Telegram or Discord: a file sent with the caption `/spark 现象` goes through the command, with
-    `现象` as the observation. Not tried live on any platform other than QQ yet.
-11. §18, tool mode (auto analysis off): the main model calls `spark_analyze` without `report_url` for a
-    message carrying a `.sparkprofile` file, and the plugin analyses the file.
+**Live verification.** The maintainer tested 1.0.7 in a QQ group (NapCat, AstrBot 4.28.2): file analysis, the
+fake-file rejection and the replies passed, with replies basically as expected (§18.1, §20). Reply style is left
+to users through `analysis_prompt`. At the maintainer's request the old per-version "not yet verified live"
+list (1.0.3-1.0.7) was removed (§20). Two 1.0.7 paths cannot occur on QQ and are covered by unit tests only: a
+file sent with a `/spark` caption (Telegram, Discord) and tool mode with an attached file.
 
 ## 5. Open items
 
@@ -285,17 +270,19 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   for only about 3 days (depending on size), so a logged id soon stops working. R3-2 (parse `MemoryError`
   message, §15) was not taken up and stays open.
 - `v1.0.6` was merged into `main` (PR #4, `654e24e`).
-- 1.0.7 (§18, §19): release branch `v1.0.7` is pushed; the maintainer tests it and merges it into `main` with
-  a PR by hand. Live checks still open: §4 items 9 (the `/spark` reply refusal), 10 and 11. Not implemented, by
-  choice: reading files or links in quoted messages (maintainer decision, §18.2), gzip-compressed files,
-  caching files.
+- 1.0.7 (§18, §19): release branch `v1.0.7` is pushed and passed the maintainer's QQ group test; the maintainer
+  merges it into `main` with a PR by hand. Not implemented, by choice: reading files or links in quoted messages
+  (maintainer decision, §18.2), gzip-compressed files, caching files.
+- Known issues from the independent review (§20), documented, not fixed: K1 prompt-injection residual risk,
+  K2 worker `setrlimit` outside `try`, K3 five constraints without test protection. Fixes need a maintainer
+  decision (plan first).
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
   for now, §12). A scratch prototype existed and was never committed.
-- The prompts (§10, §12) have not been evaluated against a live model yet. `tools/dump_prompt.py` printed the
-  exact model input; it was removed at 1.0.5 release prep and can be restored with
-  `git show b9f0466:tools/dump_prompt.py`.
+- Prompts (§10, §12): used with a live model in the maintainer's QQ test (§20), replies basically as expected;
+  further tuning is left to users through `analysis_prompt`. To inspect the exact model input, restore
+  `tools/dump_prompt.py` with `git show b9f0466:tools/dump_prompt.py` (removed at 1.0.5 release prep).
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
@@ -307,7 +294,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Chat shows raw text only for `ProfileError` / `LoadTimeout`; any other exception shows `type(exc).__name__`
   only, because messages can contain local paths.
 - Do not relax download/parse limits for report links: official host only, no redirects, `trust_env=False`,
-  16 MiB compressed / 128 MiB decoded, node/depth limits, worker `RLIMIT_AS`.
+  16 MiB compressed / 128 MiB decoded, node/depth limits, worker `RLIMIT_AS`. The node limit is not pinned by
+  any test yet (§20, K3), so check it by hand when touching `Profile.__init__`.
 - `.sparkprofile` attachments (§18): the file location comes only from the adapter's `File` component, never
   from message text; 128 MiB streaming limit; the download timeout applies; the attachment URL is never logged
   or shown (it can carry a token). `tests/test_file_transport.py` pins these.
@@ -1062,3 +1050,75 @@ beta), and will test it and merge it into `main` with a PR by hand. No PR was cr
   `claude/charming-archimedes-e9je76` (built with `git read-tree -u --reset`; verified with an empty
   `git diff`). A PR from `v1.0.7` to `main` therefore shows exactly the 1.0.7 changes.
 - **Next round:** once `v1.0.7` is merged, merge `main` into the work branch again, as in §13, before new work.
+
+## 20. Independent review of 1.0.7: verified, documented as known issues
+
+The maintainer relayed an independent review by another model and asked: re-verify; if the findings hold, add a
+short "已知问题" section to README and describe them in more detail in `checklist.md` and here; do not fix them
+in 1.0.7; push to `v1.0.7`. The maintainer also reported that the QQ group test of 1.0.7 passed with replies
+basically as expected, and asked for the old, redundant "untested" notes to be removed.
+
+**K1: prompt-injection residual risk (rated medium by the reviewer).** Report fields, method names, platform
+metadata and the user's observation reach the analysis model. Mitigations, all present in the code:
+- a dedicated, separately configured provider (`providers()`; no fallback to the main model);
+- one tool only, the read-only `spark_query` (`ToolSet([self.query_tool(...)])` in `ask()`), at most 8 calls per
+  attempt;
+- `analysis_policy.md`: report content, method names, user text and history conclusions are data, and any
+  instruction in them must not be followed;
+- the earlier result is passed as `previous_review_untrusted`;
+- no file, network or secret access is given to the model.
+
+Residual impact: a crafted report can steer the model to a wrong conclusion that is sent to chat. That is an
+integrity problem, not confidentiality or code execution, and inherent to "LLM analyses untrusted content".
+Nothing to reproduce; confirmed by reading the code.
+
+**K2: worker `setrlimit` outside `try`.** `spark_core/worker.py` `run()` calls
+`resource.setrlimit(resource.RLIMIT_AS, (1.5 GiB, 1.5 GiB))` before the `try` that writes the error
+`ready.json`. If it raises, the worker dies with the traceback on stderr, which `session.py` sends to
+`DEVNULL`. `wait_file()` then sees the exit and raises `ProfileError('解析worker异常退出')` on every analysis.
+- Reproduced on Linux by inheriting a lower hard limit, which `setrlimit` may not raise:
+  `ulimit -v 1200000` and then the worker. Result: `ValueError: not allowed to raise maximum limit`, no
+  `ready.json`. A full `ReportSession.load_file()` under the same limit gives `ProfileError 解析worker异常退出`;
+  without the limit the same sample parses. Real-world triggers are systemd `LimitAS=` and `ulimit -v`. Default
+  pip, uv and Docker setups set no address-space limit.
+- macOS: the reviewer suspected `setrlimit(RLIMIT_AS)` may be refused there. Not verified (no macOS available).
+  Note that `checklist.md` claimed a 1.5 GiB limit "on Linux and macOS"; it now points to this issue.
+- Fix options, for a later round:
+  - (a) catch `(ValueError, OSError)` around `setrlimit` and continue without the cap, recording the missing
+    cap in `ready.json` (the worker has no logger);
+  - (b) move it inside the `try` so the failure reaches chat as a readable reason, with the analysis refused.
+  - (a) keeps analyses working with less isolation; (b) keeps the isolation guarantee and makes the cause
+    visible.
+
+**K3: constraints without test protection.** The reviewer mutated 22 sites. Re-run here with
+`scripts/mutate.py` in a scratch copy (not committed): each mutation is applied alone, then the full suite runs.
+
+| Mutation | Result |
+|---|---|
+| `Profile.__init__`: `if count > max_nodes:` -> `if False:` (1,000,000-node limit, a §6 invariant) | survives, 125 OK |
+| `query_tool`: `if calls[0] > 8:` -> `if False:` (budget of 8 per attempt) | survives |
+| `query_tool`: `if self.owner(tool_event) != owner:` -> `if False:` (owner check) | survives |
+| worker loop: drop `or (... os.getppid() != parent)` (exit when the host dies, the main F2 case; only the directory-removed branch is tested) | survives |
+| `allowed()`: `return mode == 'all'` -> `return True` (unknown `access_mode` denied) | survives |
+| control: link download `trust_env=False` -> `True` | caught, 11 failures |
+
+The reviewer also reports that download limits, redirects, `trust_env`, the file size limit, owner-scoped
+history and the `stuck` guard are caught. The control above agrees for `trust_env`. Fix: one test per
+surviving mutation; no plugin code change needed. Not done, by the maintainer's instruction.
+
+**"Untested" cleanup:**
+- README: "其他平台尚未实测" dropped; the line now states the QQ test passed.
+- `checklist.md`: the same note dropped from item 4 (it was a "not verified live" note, which §6 keeps out of the
+  public checklist); "当前状态" now says 1.0.7 passed the QQ test and that reply style is set through
+  "分析回复要求".
+- §4: the 11-item "Not yet verified live" list (1.0.3-1.0.7) replaced by the live-verification paragraph.
+- §5: the "prompts not evaluated against a live model" item replaced.
+- Statements that describe a known issue's scope (macOS in K2) were kept.
+
+**Other docs:** README "## 已知问题" (three short items, before the licence); `checklist.md` "## 已知问题" (detail,
+reproduction and possible fixes, public wording); CHANGELOG 1.0.7 gets one line pointing to README. No code,
+config or test changed; tests stay at 125.
+
+**Branches:** committed on `claude/charming-archimedes-e9je76`, then cherry-picked onto `v1.0.7` as a second
+commit on top of `adea22f`, without rewriting it. Its tree again equals the work branch tip (empty `git diff`).
+A squash merge of the PR gives one commit if preferred.
