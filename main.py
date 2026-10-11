@@ -38,11 +38,6 @@ def report_files(chain):
     return list(files.values())
 
 
-def quoted_report_files(chain):
-    """.sparkprofile attachments in the messages this one replies to."""
-    return report_files([component for quoted in chain if isinstance(quoted, Reply) for component in quoted.chain or []])
-
-
 def attachment(component):
     """(local path, download URL) of a File; adapters put a URL in either field, or a path, or both."""
     local, url = str(component.file_ or ''), str(component.url or '')
@@ -116,11 +111,8 @@ class SparkPlugin(Star):
             return
         if not self.config.get('auto_analyze', True):
             return
-        # A .sparkprofile attachment, in the message or in the one it replies to, is a request on its own: QQ cannot
-        # send text with a file, so a question about it arrives as a reply. A link needs a keyword, and wins over a
-        # quoted file.
-        chain, link = event.get_messages(), LINK.search(text)
-        if not (report_files(chain) or (link and AUTO_KEYWORDS.search(text)) or (not link and quoted_report_files(chain))):
+        # A .sparkprofile attachment is a request on its own (QQ cannot send text with a file); a link needs a keyword.
+        if not report_files(event.get_messages()) and not (LINK.search(text) and AUTO_KEYWORDS.search(text)):
             return
         # Silent for non-permitted users so the message still reaches other handlers.
         if not self.allowed(event):
@@ -274,12 +266,16 @@ class SparkPlugin(Star):
         """The reports a request names: ('link', report id) and ('file', File) entries.
 
         A file in the quoted message counts only when the message itself names no report: QQ cannot send text
-        with a file, so a question about it is sent as a reply to the file message.
+        with a file, so /spark is sent as a reply to the file message.
         """
         chain = event.get_messages()
         found = [('link', key) for key in dict.fromkeys(LINK.findall(text))]
         found += [('file', component) for component in report_files(chain)]
-        return found or [('file', component) for component in quoted_report_files(chain)]
+        if not found:
+            for quoted in chain:
+                if isinstance(quoted, Reply):
+                    found += [('file', component) for component in report_files(quoted.chain)]
+        return found
 
     @staticmethod
     def report_key(source):

@@ -685,40 +685,6 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         # The auto handler steps aside for the command, even with nothing after /spark.
         self.assertEqual([r async for r in plugin.auto_analyze(self.file_event(File('b.sparkprofile', file='/b'), text='spark'))], [])
 
-    async def test_reply_to_file_starts_analysis_without_keyword(self):
-        # QQ cannot send text with a file, so a question about it arrives as a plain reply (live test, §18.1).
-        captured = {}
-        async def agent(**kwargs):
-            captured.update(kwargs)
-            return types.SimpleNamespace(completion_text='JVM结论')
-        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})
-        event = self.file_event(Reply([File('profile.sparkprofile', url='https://files.example/p')]), text='这个服务器的JVM参数合适吗')
-        with patch.object(self.module, 'ReportSession', FakeSession):
-            results = [r async for r in plugin.auto_analyze(event)]
-        self.assertEqual(results[-1], 'JVM结论')
-        self.assertEqual(FakeSession.loaded[0], ('file', '', 'https://files.example/p'))
-        self.assertEqual(self.module.json.loads(captured['prompt'])['user_observation'], '这个服务器的JVM参数合适吗')
-        self.assertTrue(event.stopped)
-
-    async def test_reply_to_file_ignored_when_not_a_report_or_already_running(self):
-        plugin = self.module.SparkPlugin(types.SimpleNamespace(), {'analysis_provider_id':'test'})
-        report = File('profile.sparkprofile', url='https://files.example/p')
-        cases = [(Reply([File('notes.txt', url='https://files.example/n')]), '这个合适吗', False),
-                 (Reply([]), '这个合适吗', False),
-                 # A link in the reply is the report, and links still need a keyword.
-                 (Reply([report]), '看看 https://spark.lucko.me/SyntheticReport001', False)]
-        for quoted, text, stopped in cases:
-            with self.subTest(text=text):
-                event = self.file_event(quoted, text=text)
-                self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
-                self.assertEqual(event.stopped, stopped)
-        # A reply while that file is being analysed is quiet, like a repeated link (live test 1, §18.1).
-        plugin.inflight_reports.add('file:profile.sparkprofile')
-        event = self.file_event(Reply([report]), text='帮我分析服务器运行状况')
-        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
-        self.assertTrue(event.stopped)
-        self.assertEqual(FakeSession.loaded, [])
-
     async def test_quoted_file_ignored_when_message_names_a_report(self):
         async def agent(**kwargs): return types.SimpleNamespace(completion_text='ok')
         plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent), {'analysis_provider_id':'test'})

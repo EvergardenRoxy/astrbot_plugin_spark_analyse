@@ -14,10 +14,13 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). `.sparkprofile` support (§18) is unreleased, on `claude/charming-archimedes-e9je76`; version unchanged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 127 (unreleased, §18, §18.1), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (unreleased, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
+
+Maintainer's working rule (from §18.1): before changing behaviour, propose a plan with its pros and cons and
+wait for the maintainer's decision. Only then implement.
 Code anchors below are greps, since line numbers drift. AstrBot line numbers refer to 4.28.2 unless stated.
 
 ### Commit map
@@ -243,7 +246,7 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 127 OK
+python -m unittest discover -s tests        # expect 125 OK
 PYTHONPATH=tests python tools/check_sample.py path/to/profile.sparkprofile   # local file, no network
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
@@ -264,10 +267,9 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 8. 1.0.6: `compare` with history disabled, or with no earlier record, ends the result with the
    "未进行历史对比：…" note; a second analysis of the same server with different wording and no `problem=` compares.
 9. §18, QQ (NapCat): a permitted user's `.sparkprofile` file gets the ack and an analysis; a non-permitted
-   member's file gets nothing; a plain reply to a file message (no keyword, no `/spark`) analyses it with the
-   reply as the observation (needs the OneBot implementation to answer `get_msg` and
-   `get_group_file_url` / `get_private_file_url`). Items 1-3 of the first live test passed (§18.1); repeat
-   the reply case after the §18.1 fix.
+   member's file gets nothing; replying `/spark 现象` to a file message analyses it (needs the OneBot
+   implementation to answer `get_msg` and `get_group_file_url` / `get_private_file_url`). The first live
+   test (§18.1) passed the file and fake-file cases; the `/spark` reply case has not been tried yet.
 10. §18, Telegram or Discord: a file sent with the caption `/spark 现象` goes through the command, with
     `现象` as the observation.
 11. §18, tool mode (auto analysis off): the main model calls `spark_analyze` without `report_url` for a
@@ -281,8 +283,9 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   message, §15) was not taken up and stays open.
 - `v1.0.6` was merged into `main` (PR #4, `654e24e`).
 - `.sparkprofile` support (§18): unreleased; the version bump (`metadata.yaml`, `@register`, CHANGELOG heading)
-  and the live checks (§4 items 9-11) are the maintainer's. Not implemented, by choice: links in quoted messages,
-  gzip-compressed files, caching files.
+  and the live checks (§4 items 9-11) are the maintainer's. Not implemented, by choice: auto analysis for a
+  keyword reply to a file message (only `/spark` reads quoted files), links in quoted messages, gzip-compressed
+  files, caching files.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
@@ -871,8 +874,7 @@ sample (NeoForge 21.1.251, MC 1.21.1, 33 s, 1 thread, 8,239 nodes, 1.1 MiB) star
 - `auto_analyze`:
   - An attachment in the message itself triggers without a keyword (QQ files carry no text). Links still need a
     keyword.
-  - Quoted files did not trigger it in the first version; the first live test showed that was wrong
-    (§18.1). They now trigger like an attachment.
+  - Quoted files do not trigger it: replying "分析一下" to a file message does nothing; `/spark` does.
   - Non-permitted senders stay silent (§2.3).
   - The `/spark` early return is now `re.match(r'spark(?:\s|$)', text.lstrip('/'))`, matching AstrBot's
     `CommandFilter`, which collapses whitespace (`star/filter/command.py:199-202`, same in 4.16.0). Before,
@@ -956,51 +958,28 @@ sample (NeoForge 21.1.251, MC 1.21.1, 33 s, 1 thread, 8,239 nodes, 1.1 MiB) star
 `download_timeout_seconds` and `download_proxy_enabled` (keys, types and defaults unchanged), CHANGELOG
 `## Unreleased`, `checklist.md` (boundaries and an unreleased section).
 
-### 18.1 First live test and fix: a reply to a file message
+### 18.1 First live test; reply trigger tried and reverted
 
-The maintainer ran the branch on AstrBot 4.28.2 with aiocqhttp (QQ group) and sent the logs:
+The maintainer ran §18 on AstrBot 4.28.2 with aiocqhttp (QQ group, NapCat):
 
 1. A real `.sparkprofile` (27,494,529 bytes) sent as a group file: route `url`, fetched in 1.7 s, parsed in
-   3 s, analysed by the configured model, history saved. Passed.
-2. A text file renamed to `CLAUDE.sparkprofile` (9,360 bytes): `报告解析失败（DecodeError）`, no model call,
-   cleanup logged. Passed, as designed.
-3. A plain reply to the file message, "这个服务器的JVM参数合适吗": no log line from the plugin, no reply.
-   Reported as a bug.
+   3 s, analysed, history saved. Passed.
+2. A text file renamed to `CLAUDE.sparkprofile`: `报告解析失败（DecodeError）`, no model call, cleanup logged.
+   Passed, as designed.
+3. A plain reply to the file message ("这个服务器的JVM参数合适吗", no `/spark`, no keyword): no plugin log line,
+   no reply. That is the §18 design (quoted files count only for `/spark`), but the maintainer expected an
+   analysis.
 
-**Cause.** By design in §18, `auto_analyze` read only files in the message itself; a quoted file counted only for
-`/spark`, and the reply had neither `/spark` nor a keyword. On QQ a file cannot carry text, so a question
-about a file always arrives as a reply. Requiring `/spark` there was the wrong call. The log of test 1 shows the
-same thing earlier: 9 s after the file, the maintainer replied "帮我分析服务器运行状况" to it, and nothing
-handled that either (here the in-flight file would have made it quiet anyway).
+**Tried:** `d2a9b8e` made a quoted `.sparkprofile` trigger auto analysis without a keyword
+(`quoted_report_files()`, two tests, 125 -> 127). It was pushed without first proposing it to the maintainer.
 
-**Fix (`main.py`):**
-- `quoted_report_files(chain)`: `.sparkprofile` files in the `Reply.chain` of every `Reply` in the message.
-  `sources()` uses it unchanged in meaning: quoted files count only when the message names no link and
-  attaches no file.
-- `auto_analyze` triggers on an attached file, on a link plus a keyword, or on a quoted file when the text has
-  no link. A quoted file needs no keyword, like an attached one: quoting the report file is the request. A link
-  in the reply wins over the quoted file and still needs a keyword, so `看看 <link>` quoting a file does nothing.
-- A reply while that file is being analysed hits the existing in-flight check (`file:<name>`) and is quiet,
-  as a repeated link is. A reply after the analysis finished starts a new one with the reply as the
-  observation. That is how test 3 is meant to work: the JVM question gets the full `vm_args` (§10), which the
-  first, question-less analysis did not.
-- Accepted cost: any permitted user's reply to a `.sparkprofile` message starts an analysis, even small talk.
-  Access is `admin_only` by default, and the file name rule keeps other files out.
+**Reverted** at the maintainer's request, back to the §18 behaviour (tree identical to `212b33a`). Reasons given:
+1. Any reply from a permitted user to a `.sparkprofile` message would start an analysis.
+2. NapCat's `get_msg` response. The quoted `File` comes from aiocqhttp's reply resolution (`get_msg`, then the
+   file segment, `aiocqhttp_platform_adapter.py:253-266`), and its name comes from `file_name`, `name` or
+   `file`, falling back to `"file"`. Whether NapCat's payload gives a `.sparkprofile` name is unverified.
 
-**Remaining risk for the next live test.** The quoted message's `File` comes from aiocqhttp's reply
-resolution: `get_msg`, then the file segment (`aiocqhttp_platform_adapter.py:253-266`). The "guessing lagrange"
-line in the test 1 log at 08:14:45 shows that segment carried an http `url`. The name is taken from
-`file_name`, `name` or `file`, falling back to `"file"`. If NapCat's `get_msg` payload has none of those, the
-name lacks `.sparkprofile` and the reply is ignored without a log line. The logs sent so far cannot show
-which case applies; the repeat of test 3 will.
-
-**Verification:** the scratch end-to-end script, run with a `Reply([File(<sample>)])` and the text
-"这个服务器的JVM参数合适吗": analysis delivered, prompt 17,698 bytes (the full `vm_args` included, against
-11,355 without a JVM question), temp directory removed.
-
-**Tests (125 -> 127):** `test_reply_to_file_starts_analysis_without_keyword` (test 3, observation is the reply
-text) and `test_reply_to_file_ignored_when_not_a_report_or_already_running` (a quoted non-report file, an empty
-quote, a link without keyword quoting a file, and the in-flight reply of test 1). Both failed on the §18 code
-and pass now, on Python 3.12 and 3.13.
-
-**Docs:** README file section, the `auto_analyze` hint, CHANGELOG `## Unreleased`, `checklist.md` and §4 item 9.
+**Still open (maintainer decision pending):** `/spark` sent as a reply still reads the quoted file
+(`sources()`), and so does `spark_analyze`. Reason 1 does not apply there (an explicit command is needed), but
+reason 2 does. If the name is lost, `/spark` gets the visible "请提供一个…" refusal, not silence. Options put to
+the maintainer: keep it and verify it live, or remove quoted-file reading entirely.
