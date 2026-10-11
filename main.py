@@ -8,13 +8,14 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import File
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from .spark_core.session import ReportSession, LoadTimeout
 from .spark_core.profile import ProfileError
 from .spark_core.history import History, compare
-from .spark_core.transport import LINK
+from .spark_core.transport import LINK, is_report_file
 from .spark_core.output import plain_text
 from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
@@ -28,7 +29,24 @@ COMPARE = re.compile(r'(?<![A-Za-z0-9_])compare(?![A-Za-z0-9_])', re.I)
 HISTORY_ERRORS = (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError)
 
 
-@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.6')
+def report_files(chain):
+    """.sparkprofile attachments in a message chain, one per file name."""
+    files = {}
+    for component in chain or []:
+        if isinstance(component, File) and is_report_file(component.name):
+            files.setdefault(component.name, component)
+    return list(files.values())
+
+
+def attachment(component):
+    """(local path, download URL) of a File; adapters put a URL in either field, or a path, or both."""
+    local, url = str(component.file_ or ''), str(component.url or '')
+    if local.startswith(('https://', 'http://')):
+        local, url = '', url or local
+    return local, url
+
+
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.7')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -89,12 +107,12 @@ class SparkPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def auto_analyze(self, event: AstrMessageEvent):
         text = event.message_str
-        if text.lstrip('/').startswith('spark '):
+        if re.match(r'spark(?:\s|$)', text.lstrip('/')):
             return
         if not self.config.get('auto_analyze', True):
             return
-        links = LINK.findall(text)
-        if not links or not AUTO_KEYWORDS.search(text):
+        # A .sparkprofile attachment is a request on its own (QQ cannot send text with a file); a link needs a keyword.
+        if not report_files(event.get_messages()) and not (LINK.search(text) and AUTO_KEYWORDS.search(text)):
             return
         # Silent for non-permitted users so the message still reaches other handlers.
         if not self.allowed(event):
@@ -128,11 +146,11 @@ class SparkPlugin(Star):
             yield result
 
     @filter.llm_tool(name='spark_analyze')
-    async def analyze_tool(self, event: AstrMessageEvent, report_url: str, observation: str = ''):
+    async def analyze_tool(self, event: AstrMessageEvent, report_url: str = '', observation: str = ''):
         '''把Spark性能报告交给插件分析。插件在后台下载报告并用专用分析模型分析，进度和结论会直接发给用户；本工具没有返回内容，调用后不要重复调用，也不要自己推测分析结论。
 
         Args:
-            report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID。
+            report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID。用户在这条消息中附带 .sparkprofile 文件时留空，插件直接读取该文件；引用消息里的文件不会读取。
             observation(string): 用户描述的现象，可选。可附 server=服务器标签、problem=问题标签；需要与上次结果对比时加 compare。
         '''
         if not self.allowed(event):
@@ -155,17 +173,18 @@ class SparkPlugin(Star):
     async def handle(self, event, text, *, stop=True):
         # stop=False for the tool path: the event belongs to the main chat agent, and
         # stopping it aborts the main model's reply.
-        links = list(dict.fromkeys(LINK.findall(text)))
+        sources = self.sources(event, text)
         owner = self.owner(event)
         providers = self.providers()
-        refusal = self.refusal(event, links, owner, providers, stop)
+        refusal = self.refusal(event, sources, owner, providers, stop)
         if refusal is not None:
             if refusal:
                 yield event.plain_result(refusal)
             if stop:
                 event.stop_event()
             return
-        report = links[0]
+        kind, source = sources[0]
+        report = self.report_key(sources[0])
         self.active.add(owner)
         self.inflight_reports.add(report)
         task = asyncio.current_task()
@@ -181,7 +200,10 @@ class SparkPlugin(Star):
                 session = self.new_session()
                 self.sessions.add(session)
                 logger.info('Spark [%s] download/parse start', trace)
-                overview = await session.load('https://spark.lucko.me/'+report)
+                if kind == 'link':
+                    overview = await session.load('https://spark.lucko.me/'+source)
+                else:
+                    overview = await session.load_file(*attachment(source))
                 logger.info('Spark [%s] download/parse success; threads=%s', trace, len(overview.get('threads', [])))
                 tags = self.tags(text, overview)
                 comparison, previous, skipped = None, None, None
@@ -239,16 +261,33 @@ class SparkPlugin(Star):
             for item in self.config.get('fallback_providers', [])
             if isinstance(item, dict) and item.get('provider_id')]))
 
-    def refusal(self, event, links, owner, providers, stop):
+    @staticmethod
+    def sources(event, text):
+        """The reports a request names: ('link', report id) and ('file', File) entries.
+
+        Only files attached to this message count. A quoted message's files are rebuilt by the adapter from a
+        second request (OneBot get_msg), and whether their name and URL survive depends on the implementation.
+        """
+        found = [('link', key) for key in dict.fromkeys(LINK.findall(text))]
+        return found + [('file', component) for component in report_files(event.get_messages())]
+
+    @staticmethod
+    def report_key(source):
+        """In-flight key and log label: the report id, or the file name (user text, so shortened)."""
+        kind, value = source
+        return value if kind == 'link' else 'file:'+str(value.name)[:80]
+
+    def refusal(self, event, sources, owner, providers, stop):
         """Why this request cannot start: a message, '' to refuse silently, or None to go ahead."""
         if not self.allowed(event):
             logger.info('Spark access denied; mode=%s', self.config.get('access_mode', 'admin_only'))
             return '此会话或用户没有Spark分析权限。'
-        if len(links) != 1:
-            return '请提供一个 https://spark.lucko.me/报告ID 。可附 server=服务器标签 problem=问题标签；比较时添加 compare。'
+        if len(sources) != 1:
+            return ('请提供一个 https://spark.lucko.me/报告ID ，或在同一条消息中附上一个 .sparkprofile 文件（不读取引用消息里的文件）。'
+                    '可附 server=服务器标签 problem=问题标签；比较时添加 compare。')
         if not providers:
             return '请先在插件配置中选择“分析模型”；不会回落到主聊天模型。'
-        if links[0] in self.inflight_reports:
+        if self.report_key(sources[0]) in self.inflight_reports:
             logger.info('Spark duplicate in-flight report skipped')
             # The tool path gets no main-model reply, so silence would leave the user with nothing.
             return '' if stop else '这份Spark报告正在分析中，完成后会直接发送结果。'

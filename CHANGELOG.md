@@ -1,11 +1,38 @@
 [![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
 
 > [!IMPORTANT]
-> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.6 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
+> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.7 版本的修改方案制定、缺陷修复、新功能实现（1.0.7 的 `.sparkprofile` 文件支持）、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
 
 # 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+## 1.0.7 - 2026-10-11
+
+> 本版本通过 **Claude Code** 依据维护者确认的方案完成修改，并经维护者在 QQ 群实测。实现细节、依据与验证方式见 [handoff.md](handoff.md) §18–§19。
+
+### 新增
+
+- **支持 `.sparkprofile` 报告文件**：服务器用 `/spark profiler stop --save-to-file` 保存的报告，或上传失败时 spark 自动保存的文件，可以直接发到聊天分析，分析内容与报告链接相同。
+  - 开启“自动识别报告链接”时，有权限的人发送 `.sparkprofile` 文件即开始分析，不需要附文字或关键词；没有权限的人发送时插件不响应。
+  - 能给文件附文字的平台（如 Telegram、Discord），在发送文件的同一条消息里写 `/spark 现象` 可以补充现象，关闭自动识别时也能用。
+  - 使用 `spark_analyze` 工具时，消息本身附带 `.sparkprofile` 文件，主聊天模型不必填写链接。
+  - **只读取消息本身附带的文件，不读取引用（回复）消息里的文件**。因此 QQ 上无法给文件补充现象或提问，且必须开启“自动识别报告链接”才能分析文件；需要提问时请改用报告链接。原因和各平台的情况见 README 的“兼容性说明”。
+  - 文件不超过 128 MiB，获取文件按“下载最长等待”计时；文件不进入报告缓存，也不经过下载代理，而是按 AstrBot 获取附件的方式从聊天平台下载。
+
+### 变更
+
+- `/spark` 后面换行再写内容时，自动识别不再抢先处理，与 AstrBot 识别命令的方式一致，统一由 `/spark` 命令处理。
+- `tools/check_sample.py` 可以直接检查本地的 `.sparkprofile` 文件（开发用）。
+- 版本号升至 1.0.7。
+
+### 测试
+
+- 单元测试由 104 项增至 125 项。
+
+### 未改动
+
+- 依赖（`requirements.txt`）和配置项键名、默认值未改动，只更新了三项配置的说明；报告链接的下载与解析限额未放宽。
 
 ## 1.0.6 - 2026-10-11
 
