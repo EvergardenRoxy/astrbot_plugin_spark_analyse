@@ -11,7 +11,7 @@
 ## 当前状态
 
 - 当前版本 **1.0.6**；另有尚未发布的修改（支持 `.sparkprofile` 文件，见下方“未发布”）。
-- 自动测试共 125 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
+- 自动测试共 127 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
 
 从 1.0.3 起，修改由 Claude Opus 5.5（通过 Claude Code）完成，经项目维护者审阅。修复问题时，先写测试并确认旧代码确实会出错，再改代码，最后跑完全部测试。
 
@@ -19,7 +19,7 @@
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests   # 应显示 Ran 125 tests ... OK
+python -m unittest discover -s tests   # 应显示 Ran 127 tests ... OK
 python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.6.zip
 ```
 
@@ -44,10 +44,11 @@ python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.6
 
 1. **可以直接发送报告文件**
    - 为什么：服务器连不上 spark 网站时拿不到报告链接，spark 会把报告保存成 `.sparkprofile` 文件；以前插件只认链接，这类报告无法分析。
-   - 做了什么：文件里的数据和链接下载到的完全相同，插件用同一套解析和分析流程处理。有权限的人发送 `.sparkprofile` 文件即开始分析；回复文件消息发送 `/spark 现象` 可以补充现象（QQ 不能给文件附文字）；`spark_analyze` 工具也能读取消息里的文件。
+   - 做了什么：文件里的数据和链接下载到的完全相同，插件用同一套解析和分析流程处理。有权限的人发送 `.sparkprofile` 文件，或回复文件消息（例如问“这个服务器的JVM参数合适吗”），即开始分析，不需要关键词（QQ 不能给文件附文字）；关闭自动识别时回复文件消息发送 `/spark 现象`；`spark_analyze` 工具也能读取消息里的文件。
    - 怎么核对：
      - 用 `PYTHONPATH=tests python tools/check_sample.py 你的文件.sparkprofile` 在本地检查，应输出平台信息和负载判定。
      - 在聊天中以有权限的身份发送 `.sparkprofile` 文件，应收到开始提示和分析；没有权限的人发送时插件不响应。
+     - 分析完成后回复这条文件消息提一个问题（不带关键词），应针对这个问题再分析一次。
 2. **文件也有边界**
    - 做了什么：文件最多 128 MiB，获取文件按“下载最长等待”计时；只读取聊天平台提供的文件位置；文件不进入报告缓存，也不经过下载代理。
    - 怎么核对：测试 `tests/test_file_transport.py` 覆盖大小上限、空文件、超时、下载地址不出现在错误信息里，以及文件不写入缓存。
