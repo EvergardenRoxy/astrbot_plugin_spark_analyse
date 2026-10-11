@@ -13,9 +13,9 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). `.sparkprofile` support (§18) is unreleased, on `claude/charming-archimedes-e9je76`; version unchanged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (unreleased, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
-| AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
+| Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). 1.0.7 (`.sparkprofile` support, §18) on `claude/charming-archimedes-e9je76`, release branch `v1.0.7` (§19), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`, `v1.0.7`. |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run by the agent**; the maintainer ran §18 live on 4.28.2 (§18.1). |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
 
@@ -47,7 +47,10 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `8290b71` | `checklist.md` split (§14); review round 3 findings verified and proposals recorded (§15) |
 | `10394bf` | Review round 3 implemented, version 1.0.6 (§16) |
 | last commit | Release prep for 1.0.6 (§17). Branch `v1.0.6` holds the same tree as one commit on `main`. |
-| branch `claude/charming-archimedes-e9je76` | `.sparkprofile` file support (§18), one commit on `main` @ `654e24e` |
+| `212b33a` | `.sparkprofile` file support (§18), on `main` @ `654e24e`, branch `claude/charming-archimedes-e9je76` |
+| `d2a9b8e`, `14db7ef` | Reply trigger, then its revert (§18.1); net change none |
+| `956fd34` | Quoted files are never read (§18.2) |
+| last commit | Release prep for 1.0.7 (§19). Branch `v1.0.7` holds the same tree as one commit on `main`. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -282,9 +285,10 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   for only about 3 days (depending on size), so a logged id soon stops working. R3-2 (parse `MemoryError`
   message, §15) was not taken up and stays open.
 - `v1.0.6` was merged into `main` (PR #4, `654e24e`).
-- `.sparkprofile` support (§18): unreleased; the version bump (`metadata.yaml`, `@register`, CHANGELOG heading)
-  and the live checks (§4 items 9-11) are the maintainer's. Not implemented, by choice: reading files or links
-  in quoted messages (maintainer decision, §18.2), gzip-compressed files, caching files.
+- 1.0.7 (§18, §19): release branch `v1.0.7` is pushed; the maintainer tests it and merges it into `main` with
+  a PR by hand. Live checks still open: §4 items 9 (the `/spark` reply refusal), 10 and 11. Not implemented, by
+  choice: reading files or links in quoted messages (maintainer decision, §18.2), gzip-compressed files,
+  caching files.
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
@@ -848,7 +852,7 @@ The maintainer asked for a `v1.0.6` release branch, built the same way as `v1.0.
   `v1.0.6` to `main` therefore shows exactly the 1.0.6 changes.
 - **Next round:** once `v1.0.6` is merged, merge `main` into the work branch again, as in §13, before new work.
 
-## 18. `.sparkprofile` file support (unreleased)
+## 18. `.sparkprofile` file support (1.0.7)
 
 Request (maintainer, in Chinese): based on `main`, try to make the plugin parse and analyse `.sparkprofile`
 files; one small sample was attached. Done on `claude/charming-archimedes-e9je76`, branched from `origin/main`
@@ -1034,3 +1038,27 @@ been tried.
 **Docs:** README "兼容性说明" under the file section, plus the tool paragraph; the `auto_analyze` hint (QQ needs it
 on to analyse files); CHANGELOG `## Unreleased`; `checklist.md` item 4 and "已知限制"; §4 items 9-10, §5 and §6
 here.
+
+## 19. Release prep for 1.0.7
+
+The maintainer asked for a release branch built the same way as `v1.0.4` to `v1.0.6`, named `v1.0.7` (not a
+beta), and will test it and merge it into `main` with a PR by hand. No PR was created by the agent.
+
+- **Base:** `origin/main` at `654e24e` (PR #4, 1.0.6). `main` had not moved since the work branch was created,
+  so the diff against `main` holds only 1.0.7 changes.
+- **Version:** `metadata.yaml` `v1.0.7`, the `@register(...)` literal `1.0.7`, and `## Unreleased` ->
+  `## 1.0.7 - 2026-10-11` (maintainer's local date, KST). `test_version_is_consistent` checks all three.
+  `checklist.md` "当前版本" and the package name follow; its unreleased section became "1.0.7".
+- **AI statements:** at the maintainer's request, the README and CHANGELOG headers now say 1.0.3 to 1.0.7 and
+  name the 1.0.7 `.sparkprofile` work. The 1.0.7 section note says the change was made through Claude Code and
+  tested live by the maintainer.
+- **Files:** one new file, `tests/test_file_transport.py`, which is a test and is not packaged. Changed:
+  `main.py`, `spark_core/session.py`, `spark_core/transport.py`, `tests/test_plugin.py`,
+  `tools/check_sample.py`, `README.md`, `_conf_schema.json` (hints only), `CHANGELOG.md`, `checklist.md`,
+  this file, plus `metadata.yaml` for the version.
+- **History:** the work branch carries the reply trigger and its revert (§18.1). The release commit is a squash,
+  so that detour is not on `v1.0.7`; this file and `checklist.md` item 4 still record it.
+- **Release branch `v1.0.7`:** a single commit on `origin/main` whose tree is identical to the tip of
+  `claude/charming-archimedes-e9je76` (built with `git read-tree -u --reset`; verified with an empty
+  `git diff`). A PR from `v1.0.7` to `main` therefore shows exactly the 1.0.7 changes.
+- **Next round:** once `v1.0.7` is merged, merge `main` into the work branch again, as in §13, before new work.

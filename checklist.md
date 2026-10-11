@@ -10,7 +10,7 @@
 
 ## 当前状态
 
-- 当前版本 **1.0.6**；另有尚未发布的修改（支持 `.sparkprofile` 文件，见下方“未发布”）。
+- 当前版本 **1.0.7**。
 - 自动测试共 125 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
 
 从 1.0.3 起，修改由 Claude Opus 5.5（通过 Claude Code）完成，经项目维护者审阅。修复问题时，先写测试并确认旧代码确实会出错，再改代码，最后跑完全部测试。
@@ -20,7 +20,7 @@
 ```bash
 pip install -r requirements.txt
 python -m unittest discover -s tests   # 应显示 Ran 125 tests ... OK
-python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.6.zip
+python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7.zip
 ```
 
 也可以在 GitHub 仓库的 Actions 页面查看每次推送的测试结果。
@@ -40,7 +40,7 @@ python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.6
 
 ## 各版本做了什么
 
-### 未发布：支持 `.sparkprofile` 文件
+### 1.0.7：支持 `.sparkprofile` 文件
 
 1. **可以直接发送报告文件**
    - 为什么：服务器连不上 spark 网站时拿不到报告链接，spark 会把报告保存成 `.sparkprofile` 文件；以前插件只认链接，这类报告无法分析。

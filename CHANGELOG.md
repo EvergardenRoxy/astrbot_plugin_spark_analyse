@@ -1,15 +1,15 @@
 [![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
 
 > [!IMPORTANT]
-> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.6 版本的修改方案制定、缺陷修复、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
+> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.7 版本的修改方案制定、缺陷修复、新功能实现（1.0.7 的 `.sparkprofile` 文件支持）、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
 
 # 更新日志
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## Unreleased
+## 1.0.7 - 2026-10-11
 
-> 本节修改通过 **Claude Code** 完成，尚未发布，版本号未变。实现细节、依据与验证方式见 [handoff.md](handoff.md) §18。
+> 本版本通过 **Claude Code** 依据维护者确认的方案完成修改，并经维护者在 QQ 群实测。实现细节、依据与验证方式见 [handoff.md](handoff.md) §18–§19。
 
 ### 新增
 
@@ -24,6 +24,7 @@
 
 - `/spark` 后面换行再写内容时，自动识别不再抢先处理，与 AstrBot 识别命令的方式一致，统一由 `/spark` 命令处理。
 - `tools/check_sample.py` 可以直接检查本地的 `.sparkprofile` 文件（开发用）。
+- 版本号升至 1.0.7。
 
 ### 测试
 
