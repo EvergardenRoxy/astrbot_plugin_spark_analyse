@@ -9,7 +9,7 @@ from astrbot.api import logger
 class LoadTimeout(TimeoutError):
     pass
 from pathlib import Path
-from .transport import download, report_id
+from .transport import download, fetch_file, report_id
 from .profile import ProfileError
 
 
@@ -58,7 +58,23 @@ class ReportSession:
                 raise LoadTimeout(f'下载阶段超时（{self.download_timeout}秒）；尚未调用分析模型；{exc}') from exc
             await self.cache_call('put', key, target)
         logger.info('Spark download success; decoded_bytes=%s; parse start timeout=%ss',
-                    (self.directory/'profile.bin').stat().st_size, self.parse_timeout)
+                    target.stat().st_size, self.parse_timeout)
+        return await self.parse(key)
+
+    async def load_file(self, local='', url=''):
+        """A .sparkprofile attachment. Not cached: the user still has the file and sends it again."""
+        target = self.directory/'profile.bin'
+        logger.info('Spark file fetch start; timeout=%ss', self.download_timeout)
+        try:
+            await fetch_file(local, url, target, timeout_seconds=self.download_timeout)
+        except TimeoutError as exc:
+            raise LoadTimeout(f'文件获取阶段超时（{self.download_timeout}秒）；尚未调用分析模型；{exc}') from exc
+        logger.info('Spark file fetch success; bytes=%s; parse start timeout=%ss',
+                    target.stat().st_size, self.parse_timeout)
+        return await self.parse()
+
+    async def parse(self, key=None):
+        """Start the worker on profile.bin and wait for its overview; key names the cache entry it came from."""
         self.process = await asyncio.create_subprocess_exec(
             sys.executable, str(Path(__file__).with_name('worker.py')), str(self.directory),
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
@@ -69,7 +85,7 @@ class ReportSession:
             raise LoadTimeout(f'解析/证据包阶段超时（{self.parse_timeout}秒）；尚未调用分析模型') from exc
         logger.info('Spark parse ready; worker_pid=%s', self.process.pid)
         if 'error' in self.overview:
-            if self.overview['error'].startswith('DecodeError:'):
+            if self.overview['error'].startswith('DecodeError:') and key:
                 await self.cache_call('discard', key)
             kind, _, reason = self.overview['error'].partition(': ')
             raise ProfileError(reason or f'报告解析失败（{kind}）')

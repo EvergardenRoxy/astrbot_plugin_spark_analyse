@@ -13,11 +13,14 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Inputs | `AUDIT_FINDINGS.md` (finding IDs F1-F8, X1-X4), `FIX_PLAN.md` (batching, decisions D1-D5, execution status). Both were removed from the tree at release; read them with `git show c47cc0f:AUDIT_FINDINGS.md` / `git show c47cc0f:FIX_PLAN.md`. |
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
-| Version | 1.0.6 (§16), release branch `v1.0.6` (§17), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
-| AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run.** |
+| Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). 1.0.7 (`.sparkprofile` support, §18) on `claude/charming-archimedes-e9je76`, release branch `v1.0.7` (§19), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`, `v1.0.7`. |
+| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run by the agent**; the maintainer ran §18 live on 4.28.2 (§18.1) and tested 1.0.7 in a QQ group (§20). |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
+
+Maintainer's working rule (from §18.1): before changing behaviour, propose a plan with its pros and cons and
+wait for the maintainer's decision. Only then implement.
 Code anchors below are greps, since line numbers drift. AstrBot line numbers refer to 4.28.2 unless stated.
 
 ### Commit map
@@ -44,6 +47,11 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | `8290b71` | `checklist.md` split (§14); review round 3 findings verified and proposals recorded (§15) |
 | `10394bf` | Review round 3 implemented, version 1.0.6 (§16) |
 | last commit | Release prep for 1.0.6 (§17). Branch `v1.0.6` holds the same tree as one commit on `main`. |
+| `212b33a` | `.sparkprofile` file support (§18), on `main` @ `654e24e`, branch `claude/charming-archimedes-e9je76` |
+| `d2a9b8e`, `14db7ef` | Reply trigger, then its revert (§18.1); net change none |
+| `956fd34` | Quoted files are never read (§18.2) |
+| `43f4241` | Release prep for 1.0.7 (§19). Branch `v1.0.7` holds the same tree as one commit on `main` (`adea22f`). |
+| last commit | Independent review findings verified and documented; stale "untested" notes removed (§20). Also on `v1.0.7` as a second commit. |
 
 ## 2. Changes, reasoning, evidence
 
@@ -236,30 +244,24 @@ Code anchors below are greps, since line numbers drift. AstrBot line numbers ref
 | Report data (§10, §12) | `test_core.py`: world statistics, window counts, `test_wait_time_counts_outermost_wait_frames`, `test_platform_brand_is_reported` |
 | Oversized-report message (§12) | `test_oversized_report_message_explains_the_remedy` |
 | Round 3 (§16) | `test_stuck_model_task_blocks_fallback`, `test_compare_keyword_is_a_whole_word`, `test_compare_ignores_derived_problem_tag`, `test_skipped_comparison_is_explained`, `test_auto_analyze_keywords` |
+| `.sparkprofile` (§18) | all of `tests/test_file_transport.py`; in `tests/test_plugin.py` the 8 tests after the `file_event` helper |
 
 ## 4. How to re-verify
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests        # expect 104 OK
+python -m unittest discover -s tests        # expect 125 OK
+PYTHONPATH=tests python tools/check_sample.py path/to/profile.sparkprofile   # local file, no network
 python tools/package_plugin.py && rm -rf dist
 # Re-read AstrBot sources (read-only; do not execute):
 pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/ab/astrbot-4.28.2-*.whl /tmp/ab/src
 ```
 
-**Not yet verified live (do this before release):**
-1. Tool mode: after `spark_analyze`, the main model sends nothing further; the plugin's ack and result arrive;
-   the conversation history contains the turn (>= 4.27.0).
-2. Tool mode with no provider configured: only the plugin's message appears; no "Output stopped." in history.
-3. The config page renders the Chinese option labels and the ‼️ marker; check on the oldest AstrBot version you support.
-4. Replies from a real analysis model follow the reply prompt: 3-5 sentences for a healthy report; otherwise
-   现状 / 疑似问题点 / 建议先做的检查 within ~800 characters, ending with the pointer to experienced people.
-5. A Paper, Folia or Leaf report gets advice that fits that server, with no mod-server remedies.
-6. An oversized (multi-hour) report shows the "采样时间太长" message with `--timeout 300` in chat.
-7. A saved legacy default `analysis_prompt` is replaced by the current default on load and shown on the config page;
-   custom text is kept.
-8. 1.0.6: `compare` with history disabled, or with no earlier record, ends the result with the
-   "未进行历史对比：…" note; a second analysis of the same server with different wording and no `problem=` compares.
+**Live verification.** The maintainer tested 1.0.7 in a QQ group (NapCat, AstrBot 4.28.2): file analysis, the
+fake-file rejection and the replies passed, with replies basically as expected (§18.1, §20). Reply style is left
+to users through `analysis_prompt`. At the maintainer's request the old per-version "not yet verified live"
+list (1.0.3-1.0.7) was removed (§20). Two 1.0.7 paths cannot occur on QQ and are covered by unit tests only: a
+file sent with a `/spark` caption (Telegram, Discord) and tool mode with an attached file.
 
 ## 5. Open items
 
@@ -267,14 +269,20 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Review round 3: R3-1, R3-4 and R3-5 implemented (§16). R3-3 declined by the maintainer: spark keeps a report
   for only about 3 days (depending on size), so a logged id soon stops working. R3-2 (parse `MemoryError`
   message, §15) was not taken up and stays open.
-- Merge `v1.0.6` into `main` (§17). No PR was created by the agent; that is the maintainer's call.
+- `v1.0.6` was merged into `main` (PR #4, `654e24e`).
+- 1.0.7 (§18, §19): release branch `v1.0.7` is pushed and passed the maintainer's QQ group test; the maintainer
+  merges it into `main` with a PR by hand. Not implemented, by choice: reading files or links in quoted messages
+  (maintainer decision, §18.2), gzip-compressed files, caching files.
+- Known issues from the independent review (§20), documented, not fixed: K1 prompt-injection residual risk,
+  K2 worker `setrlimit` outside `try`, K3 five constraints without test protection. Fixes need a maintainer
+  decision (plan first).
 - AstrBot desktop client (`ASTRBOT_DESKTOP_CLIENT=1`): out of scope by maintainer decision. See §11 for the
   two source-read risks (worker cannot see `data/site-packages`; `sys.executable` may not be Python when frozen).
 - Prompt rewrite phase 2 (§10): per-category tick breakdown. Shelved by maintainer decision (no new features
   for now, §12). A scratch prototype existed and was never committed.
-- The prompts (§10, §12) have not been evaluated against a live model yet. `tools/dump_prompt.py` printed the
-  exact model input; it was removed at 1.0.5 release prep and can be restored with
-  `git show b9f0466:tools/dump_prompt.py`.
+- Prompts (§10, §12): used with a live model in the maintainer's QQ test (§20), replies basically as expected;
+  further tuning is left to users through `analysis_prompt`. To inspect the exact model input, restore
+  `tools/dump_prompt.py` with `git show b9f0466:tools/dump_prompt.py` (removed at 1.0.5 release prep).
 - Next version bump: update `metadata.yaml`, `@register` and the CHANGELOG heading together (enforced by
   `test_version_is_consistent`). Start the next CHANGELOG section as `## Unreleased`, which the test ignores.
 - F4 options A (require @/wake) and C (per-user cooldown): not implemented.
@@ -285,8 +293,12 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
 - Log only through `astrbot.api.logger`. `tests/test_logging_scope.py` enforces this.
 - Chat shows raw text only for `ProfileError` / `LoadTimeout`; any other exception shows `type(exc).__name__`
   only, because messages can contain local paths.
-- Do not relax download/parse limits: official host only, no redirects, `trust_env=False`, 16 MiB
-  compressed / 128 MiB decoded, node/depth limits, worker `RLIMIT_AS`.
+- Do not relax download/parse limits for report links: official host only, no redirects, `trust_env=False`,
+  16 MiB compressed / 128 MiB decoded, node/depth limits, worker `RLIMIT_AS`. The node limit is not pinned by
+  any test yet (§20, K3), so check it by hand when touching `Profile.__init__`.
+- `.sparkprofile` attachments (§18): the file location comes only from the adapter's `File` component, never
+  from message text; 128 MiB streaming limit; the download timeout applies; the attachment URL is never logged
+  or shown (it can carry a token). `tests/test_file_transport.py` pins these.
 - Never call `stop_event()` on the tool path. Never return text from `analyze_tool`'s success path without
   re-reading §2.2, since doing so brings back the extra main-model call.
 - Config schema: keys and types are a compatibility surface for existing installs. A default change only reaches
@@ -303,6 +315,8 @@ pip download astrbot==4.28.2 --no-deps -d /tmp/ab && python -m zipfile -e /tmp/a
   (`test_prompt_files_are_packaged`); otherwise the release zip crashes at load.
 - Default access is `admin_only`. The code fallback (`config.get('access_mode', 'admin_only')`, 3 places in
   `main.py`) must match the schema default; `test_default_access_is_admin_only` checks both.
+- Only files attached to the message itself are reports. Never read a quoted message's files (`Reply.chain`)
+  on any path without a new maintainer decision (§18.2); `test_quoted_files_are_never_read` pins it.
 
 ## 7. Release prep for 1.0.3
 
@@ -825,3 +839,286 @@ The maintainer asked for a `v1.0.6` release branch, built the same way as `v1.0.
   `claude/keen-bohr-d01us1` (built with `git read-tree -u --reset`; verified with an empty `git diff`). A PR from
   `v1.0.6` to `main` therefore shows exactly the 1.0.6 changes.
 - **Next round:** once `v1.0.6` is merged, merge `main` into the work branch again, as in §13, before new work.
+
+## 18. `.sparkprofile` file support (1.0.7)
+
+Request (maintainer, in Chinese): based on `main`, try to make the plugin parse and analyse `.sparkprofile`
+files; one small sample was attached. Done on `claude/charming-archimedes-e9je76`, branched from `origin/main`
+@ `654e24e` (PR #4, 1.0.6). Version unchanged; CHANGELOG has `## Unreleased`.
+
+**Format.** A `.sparkprofile` is the raw `SamplerData` protobuf. spark's `SamplerModule` writes
+`output.toByteArray()` for `--save-to-file`, and falls back to the same file when the bytebin upload fails. The
+sample (NeoForge 21.1.251, MC 1.21.1, 33 s, 1 thread, 8,239 nodes, 1.1 MiB) starts with `0a 9c 90 05` (field 1
+`metadata`, length-delimited) and decodes with the bundled `spark_sampler_pb2`; `Profile` accepts it
+(execution mode, Java engine). So the parser is unchanged. The new code only gets the file's bytes into
+`profile.bin`.
+
+**Entry points (`main.py`):**
+- `report_files(chain)`: `File` components whose name ends in `.sparkprofile` (case-insensitive), one per name.
+- `sources(event, text)`: `('link', id)` for links in the text, `('file', File)` for files in the message, and
+  files in a quoted message (`Reply.chain`) only when the message itself names nothing. Reason: QQ (OneBot)
+  cannot attach text to a file, so `/spark 现象` is sent as a reply. aiocqhttp resolves replies by default
+  (`get_reply=True`, `aiocqhttp_platform_adapter.py:201`) and resolves the quoted message's file segment too, so
+  `Reply.chain` carries a `File(name, url)`. **Superseded by §18.2: quoted files are no longer read.**
+- `refusal()` now takes the sources. None, or more than one (including a link plus a file), gives the existing
+  "请提供一个…" message, which now mentions files. A link plus a file is refused rather than guessed.
+- `report_key()`: in-flight key and log label. For a file it is `file:<name[:80]>`; the name is user text, so it
+  is shortened. The URL is never logged.
+- `auto_analyze`:
+  - An attachment in the message itself triggers without a keyword (QQ files carry no text). Links still need a
+    keyword.
+  - Quoted files do not trigger it: replying "分析一下" to a file message does nothing; `/spark` does (no
+    longer, §18.2).
+  - Non-permitted senders stay silent (§2.3).
+  - The `/spark` early return is now `re.match(r'spark(?:\s|$)', text.lstrip('/'))`, matching AstrBot's
+    `CommandFilter`, which collapses whitespace (`star/filter/command.py:199-202`, same in 4.16.0). Before,
+    `spark` followed by a newline fell through to auto analysis.
+  - File-only messages reach this handler: `event_message_type(ALL)` handlers are activated for every
+    message (`waking_check/stage.py`).
+- `analyze_tool`: `report_url` defaults to `''`, and the docstring tells the model to leave it empty for files.
+  AstrBot's `llm_tool` schema has no `required` list (`star_handler.py:635-664`), so omitting it is valid. In
+  4.28.2 the main agent has already called `File.get_file()` and told the model
+  `[File Attachment: name …, path …]` (`astr_main_agent.py:1409-1416`; quoted files `:1463-1471`), so `file_`
+  holds a local path by the time the tool runs.
+- `attachment(File)` returns `(local, url)`. Adapters differ:
+  - aiocqhttp, Discord and Misskey set only `url`.
+  - Telegram, QQ official and Slack put the URL in both `file_` and `url`.
+  - KOOK puts it in `file_` only, as does Satori when the element's `src` is a URL.
+  - Webchat, Lark, DingTalk, WeCom and Mattermost set a local `file_`.
+  - A `file_` starting with http(s) is therefore treated as the URL. The `File.file` property is not used: it
+    downloads synchronously and only warns inside an event loop.
+
+**Fetch (`spark_core/transport.py`, `fetch_file`):**
+- An existing local path (or `file://` URI) is copied in a stream with the limit (`_copy`). Otherwise an
+  http(s) URL is fetched (`_fetch`). Otherwise `ProfileError('无法读取聊天中的文件，请重新发送')`. An empty file
+  gives `报告文件为空`.
+- Limit 128 MiB, the decoded limit of the link path, since a file has no transport compression. The worker's
+  own 128 MiB check stays.
+- `_fetch`:
+  - `trust_env=True`, redirects followed, default TLS verification, `Accept-Encoding: identity`.
+  - `ClientTimeout(total=download_timeout, connect=min(30, …))`.
+  - Early reject on `Content-Length`, then the streaming limit.
+  - `ClientError` becomes a `ProfileError` with the type name only (`from None`): aiohttp messages contain the
+    URL, and Telegram's URL contains the bot token.
+  - A timeout becomes a `TimeoutError` with phase, bytes and elapsed time, like `download()`.
+- Why not `File.get_file()`: AstrBot's `download_file` (`utils/io.py:276-336`) has no size limit, a 1800 s
+  timeout, and retries with `CERT_NONE` after a certificate error. It also leaves a temp file for the caller to
+  delete. The plugin's limits would only apply after a full download.
+- Why `trust_env=True` and not the plugin proxy: the proxy is documented as Spark-download-only. Attachments
+  come from the chat platform (often QQ's domestic CDN, which a foreign proxy could break), and AstrBot itself
+  fetches attachments with `trust_env=True`. README and the proxy hint say so.
+- Trust boundary: the file location comes from the adapter's `File` component, not from message text. A URL
+  typed in chat is only ever matched by `LINK`. This is the only place the plugin fetches a non-official URL;
+  the link-path invariants (§6) are unchanged.
+
+**Session (`spark_core/session.py`):**
+- `load()` now ends with `parse(key)`. `parse()` holds the old worker start, wait and error code, unchanged
+  except that a `DecodeError` discards the cache entry only when there is a key.
+- `load_file(local, url)`: `fetch_file`; a timeout becomes
+  `LoadTimeout('文件获取阶段超时（N秒）；尚未调用分析模型；…')`; then `parse()`.
+- No raw cache for files: sending the file again costs nothing, and the key would have to be a content hash
+  taken after the fetch anyway.
+- Same temp directory, worker, `RLIMIT_AS`, 128 KiB evidence cap and cleanup as for links.
+
+**Verification:**
+- The sample through `tools/check_sample.py` (now also takes a local file) with the real worker: Java 21,
+  triage "未见持续过载（TPS 20.45，MSPT中位数 11.6 毫秒）；存在偶发尖峰：最慢一次 tick 1806 毫秒…；tick 线程约
+  60.4% 的时间在等待…空闲；3 名玩家，已加载 7193 个区块；实体 316 个".
+- A scratch end-to-end run (not committed): `auto_analyze` with `File(file=<sample>)`, the real
+  `ReportSession`, and a stub model that calls `spark_query` once. Result: ack and reply delivered; prompt
+  11,355 bytes; the `spark-*` directory removed; no `profiles.sqlite3` created; no URL in the logs.
+- The URL route against a local `http.server`: parsed; a 404 gives `文件下载失败 HTTP 404，请重新发送文件`.
+- The sample is not committed (same policy as report ids, F7).
+
+**Tests (104 -> 125):**
+- `tests/test_file_transport.py` (13): file-name rule; local copy, `file://` URI, local preferred over URL,
+  fallback to the URL when the local file is gone; size limit and empty file; nothing fetched without a usable
+  location (including an `ftp://` or `file://` value in `url`); URL fetch settings (`trust_env`, no plugin
+  proxy, identity encoding, default TLS); URL size, `Content-Length`, status and empty body; error messages
+  never contain the URL or its token; the real worker parses a `.sparkprofile` and no cache database is created;
+  undecodable file message; labeled fetch timeout.
+- `tests/test_plugin.py` (+8): attachment triggers without a keyword (and is logged by name only); other
+  attachments, non-permitted senders and the off switch are ignored; `/spark` reads a quoted file and auto
+  analysis steps aside for `spark`; a link in the message wins over a quoted file (these two replaced in
+  §18.2); more than one report is
+  refused; the tool path reads the file without `report_url`; a duplicate in-flight file is quiet;
+  `attachment()` field handling.
+- Harness: the test `Event` has `get_messages()`; `File` and `Reply` doubles are registered as
+  `astrbot.api.message_components`; `FakeSession` has `load_file` and records what it loaded.
+- Against the old `main.py`, `session.py` and `transport.py`, the new tests failed (6 failures, 4 errors,
+  including the transport module failing to import). `test_attachments_that_are_not_reports_are_ignored` and
+  `test_quoted_file_ignored_when_message_names_a_report` pass on both by design: they are regression guards.
+
+**Docs:** README (usage, limits, proxy, storage), `_conf_schema.json` hints for `auto_analyze`,
+`download_timeout_seconds` and `download_proxy_enabled` (keys, types and defaults unchanged), CHANGELOG
+`## Unreleased`, `checklist.md` (boundaries and an unreleased section).
+
+### 18.1 First live test; reply trigger tried and reverted
+
+The maintainer ran §18 on AstrBot 4.28.2 with aiocqhttp (QQ group, NapCat):
+
+1. A real `.sparkprofile` (27,494,529 bytes) sent as a group file: route `url`, fetched in 1.7 s, parsed in
+   3 s, analysed, history saved. Passed.
+2. A text file renamed to `CLAUDE.sparkprofile`: `报告解析失败（DecodeError）`, no model call, cleanup logged.
+   Passed, as designed.
+3. A plain reply to the file message ("这个服务器的JVM参数合适吗", no `/spark`, no keyword): no plugin log line,
+   no reply. That is the §18 design (quoted files count only for `/spark`), but the maintainer expected an
+   analysis.
+
+**Tried:** `d2a9b8e` made a quoted `.sparkprofile` trigger auto analysis without a keyword
+(`quoted_report_files()`, two tests, 125 -> 127). It was pushed without first proposing it to the maintainer.
+
+**Reverted** at the maintainer's request, back to the §18 behaviour (tree identical to `212b33a`). Reasons given:
+1. Any reply from a permitted user to a `.sparkprofile` message would start an analysis.
+2. NapCat's `get_msg` response. The quoted `File` comes from aiocqhttp's reply resolution (`get_msg`, then the
+   file segment, `aiocqhttp_platform_adapter.py:254-301`), and its name comes from `file_name`, `name` or
+   `file`, falling back to `"file"`. Whether NapCat's payload gives a `.sparkprofile` name is unverified.
+
+**Open question after the revert:** `/spark` sent as a reply still read the quoted file (`sources()`), and so
+did `spark_analyze`. Reason 1 does not apply there (an explicit command is needed), but reason 2 does. Options
+put to the maintainer, with pros and cons: A, keep it and verify it live; B, remove quoted-file reading
+entirely. The maintainer chose B (§18.2).
+
+### 18.2 Quoted files are never read (maintainer decision, option B)
+
+**Decision.** Of the two options in §18.1, the maintainer chose B: only files attached to the message itself
+count, on every path (`/spark`, auto analysis, `spark_analyze`). The maintainer also asked for the compatibility
+consequences to be stated in README, `checklist.md` and here.
+
+**Change (`main.py`):**
+- `sources()` returns links in the text plus `.sparkprofile` files of `event.get_messages()`. It no longer looks
+  into `Reply.chain`, and `Reply` is no longer imported. `auto_analyze` already read only the message's own
+  files, so it is unchanged.
+- The refusal for none or several reports now says
+  "…或在同一条消息中附上一个 .sparkprofile 文件（不读取引用消息里的文件）…", so a `/spark` reply to a file
+  message explains itself instead of pointing back to the reply method.
+- The `spark_analyze` docstring tells the model that only a file attached to this message is read.
+
+**Compatibility.** Why quoted files are not read:
+- A quoted message's components are not the original message. The adapter rebuilds them from a second request:
+  aiocqhttp calls `get_msg` and re-parses the file segment (`aiocqhttp_platform_adapter.py:254-301` for files,
+  `:303-343` for replies). The name falls back through `file_name`, `name` and `file` to `"file"`. Whether a
+  given OneBot implementation (NapCat, Lagrange, …) returns a usable name and download URL there is
+  unverified, and an unrecognised name means the file is silently not a report.
+- A reply trigger without `/spark` would start an analysis for any reply from a permitted user (§18.1, reason 1).
+
+What that means per platform:
+
+| Platform | Analysing a `.sparkprofile` | Adding an observation or question |
+|---|---|---|
+| QQ via OneBot (NapCat, Lagrange) | Only by auto analysis when the file is sent ("自动识别报告链接" must be on). A QQ file message carries no text, so `/spark` cannot accompany it. | Not possible for files; use a report link with the question instead. |
+| Telegram (caption), Discord (message text) | Auto analysis, or `/spark 现象` in the same message as the file, which works with auto analysis off. | `/spark 现象` in the same message. |
+| Platforms giving a local path (webchat, Lark, DingTalk, WeCom, …) | Same rule: the file must be in the message. | Depends on whether the platform sends text with a file. |
+| `spark_analyze` (tool mode) | Only a file attached to the message the main model is handling. | The model's `observation`. |
+
+Live evidence so far: QQ group, NapCat, AstrBot 4.28.2 (§18.1): sending a file works. No other platform has
+been tried.
+
+**Tests (still 125):** `test_command_reads_file_in_quoted_message` and
+`test_quoted_file_ignored_when_message_names_a_report` were replaced:
+- `test_command_reads_file_in_same_message`: `/spark 掉TPS` with the file in the same message (Telegram/Discord
+  shape) loads the file with the text as the observation, and auto analysis steps aside for it.
+- `test_quoted_files_are_never_read`: a `/spark` reply to a file gets the new refusal; plain replies (the
+  live-test texts) are ignored and the event is not stopped; the tool path gets the refusal; a link in a reply
+  that quotes a file still loads only the link. It failed on the §18 code and passes now, on Python 3.12 and
+  3.13.
+
+**Docs:** README "兼容性说明" under the file section, plus the tool paragraph; the `auto_analyze` hint (QQ needs it
+on to analyse files); CHANGELOG `## Unreleased`; `checklist.md` item 4 and "已知限制"; §4 items 9-10, §5 and §6
+here.
+
+## 19. Release prep for 1.0.7
+
+The maintainer asked for a release branch built the same way as `v1.0.4` to `v1.0.6`, named `v1.0.7` (not a
+beta), and will test it and merge it into `main` with a PR by hand. No PR was created by the agent.
+
+- **Base:** `origin/main` at `654e24e` (PR #4, 1.0.6). `main` had not moved since the work branch was created,
+  so the diff against `main` holds only 1.0.7 changes.
+- **Version:** `metadata.yaml` `v1.0.7`, the `@register(...)` literal `1.0.7`, and `## Unreleased` ->
+  `## 1.0.7 - 2026-10-11` (maintainer's local date, KST). `test_version_is_consistent` checks all three.
+  `checklist.md` "当前版本" and the package name follow; its unreleased section became "1.0.7".
+- **AI statements:** at the maintainer's request, the README and CHANGELOG headers now say 1.0.3 to 1.0.7 and
+  name the 1.0.7 `.sparkprofile` work. The 1.0.7 section note says the change was made through Claude Code and
+  tested live by the maintainer.
+- **Files:** one new file, `tests/test_file_transport.py`, which is a test and is not packaged. Changed:
+  `main.py`, `spark_core/session.py`, `spark_core/transport.py`, `tests/test_plugin.py`,
+  `tools/check_sample.py`, `README.md`, `_conf_schema.json` (hints only), `CHANGELOG.md`, `checklist.md`,
+  this file, plus `metadata.yaml` for the version.
+- **History:** the work branch carries the reply trigger and its revert (§18.1). The release commit is a squash,
+  so that detour is not on `v1.0.7`; this file and `checklist.md` item 4 still record it.
+- **Release branch `v1.0.7`:** a single commit on `origin/main` whose tree is identical to the tip of
+  `claude/charming-archimedes-e9je76` (built with `git read-tree -u --reset`; verified with an empty
+  `git diff`). A PR from `v1.0.7` to `main` therefore shows exactly the 1.0.7 changes.
+- **Next round:** once `v1.0.7` is merged, merge `main` into the work branch again, as in §13, before new work.
+
+## 20. Independent review of 1.0.7: verified, documented as known issues
+
+The maintainer relayed an independent review by another model and asked: re-verify; if the findings hold, add a
+short "已知问题" section to README and describe them in more detail in `checklist.md` and here; do not fix them
+in 1.0.7; push to `v1.0.7`. The maintainer also reported that the QQ group test of 1.0.7 passed with replies
+basically as expected, and asked for the old, redundant "untested" notes to be removed.
+
+**K1: prompt-injection residual risk (rated medium by the reviewer).** Report fields, method names, platform
+metadata and the user's observation reach the analysis model. Mitigations, all present in the code:
+- a dedicated, separately configured provider (`providers()`; no fallback to the main model);
+- one tool only, the read-only `spark_query` (`ToolSet([self.query_tool(...)])` in `ask()`), at most 8 calls per
+  attempt;
+- `analysis_policy.md`: report content, method names, user text and history conclusions are data, and any
+  instruction in them must not be followed;
+- the earlier result is passed as `previous_review_untrusted`;
+- no file, network or secret access is given to the model.
+
+Residual impact: a crafted report can steer the model to a wrong conclusion that is sent to chat. That is an
+integrity problem, not confidentiality or code execution, and inherent to "LLM analyses untrusted content".
+Nothing to reproduce; confirmed by reading the code.
+
+**K2: worker `setrlimit` outside `try`.** `spark_core/worker.py` `run()` calls
+`resource.setrlimit(resource.RLIMIT_AS, (1.5 GiB, 1.5 GiB))` before the `try` that writes the error
+`ready.json`. If it raises, the worker dies with the traceback on stderr, which `session.py` sends to
+`DEVNULL`. `wait_file()` then sees the exit and raises `ProfileError('解析worker异常退出')` on every analysis.
+- Reproduced on Linux by inheriting a lower hard limit, which `setrlimit` may not raise:
+  `ulimit -v 1200000` and then the worker. Result: `ValueError: not allowed to raise maximum limit`, no
+  `ready.json`. A full `ReportSession.load_file()` under the same limit gives `ProfileError 解析worker异常退出`;
+  without the limit the same sample parses. Real-world triggers are systemd `LimitAS=` and `ulimit -v`. Default
+  pip, uv and Docker setups set no address-space limit.
+- macOS: the reviewer suspected `setrlimit(RLIMIT_AS)` may be refused there. Not verified (no macOS available).
+  Note that `checklist.md` claimed a 1.5 GiB limit "on Linux and macOS"; it now points to this issue.
+- Fix options, for a later round:
+  - (a) catch `(ValueError, OSError)` around `setrlimit` and continue without the cap, recording the missing
+    cap in `ready.json` (the worker has no logger);
+  - (b) move it inside the `try` so the failure reaches chat as a readable reason, with the analysis refused.
+  - (a) keeps analyses working with less isolation; (b) keeps the isolation guarantee and makes the cause
+    visible.
+
+**K3: constraints without test protection.** The reviewer mutated 22 sites. Re-run here with
+`scripts/mutate.py` in a scratch copy (not committed): each mutation is applied alone, then the full suite runs.
+
+| Mutation | Result |
+|---|---|
+| `Profile.__init__`: `if count > max_nodes:` -> `if False:` (1,000,000-node limit, a §6 invariant) | survives, 125 OK |
+| `query_tool`: `if calls[0] > 8:` -> `if False:` (budget of 8 per attempt) | survives |
+| `query_tool`: `if self.owner(tool_event) != owner:` -> `if False:` (owner check) | survives |
+| worker loop: drop `or (... os.getppid() != parent)` (exit when the host dies, the main F2 case; only the directory-removed branch is tested) | survives |
+| `allowed()`: `return mode == 'all'` -> `return True` (unknown `access_mode` denied) | survives |
+| control: link download `trust_env=False` -> `True` | caught, 11 failures |
+
+The reviewer also reports that download limits, redirects, `trust_env`, the file size limit, owner-scoped
+history and the `stuck` guard are caught. The control above agrees for `trust_env`. Fix: one test per
+surviving mutation; no plugin code change needed. Not done, by the maintainer's instruction.
+
+**"Untested" cleanup:**
+- README: "其他平台尚未实测" dropped; the line now states the QQ test passed.
+- `checklist.md`: the same note dropped from item 4 (it was a "not verified live" note, which §6 keeps out of the
+  public checklist); "当前状态" now says 1.0.7 passed the QQ test and that reply style is set through
+  "分析回复要求".
+- §4: the 11-item "Not yet verified live" list (1.0.3-1.0.7) replaced by the live-verification paragraph.
+- §5: the "prompts not evaluated against a live model" item replaced.
+- Statements that describe a known issue's scope (macOS in K2) were kept.
+
+**Other docs:** README "## 已知问题" (three short items, before the licence); `checklist.md` "## 已知问题" (detail,
+reproduction and possible fixes, public wording); CHANGELOG 1.0.7 gets one line pointing to README. No code,
+config or test changed; tests stay at 125.
+
+**Branches:** committed on `claude/charming-archimedes-e9je76`, then cherry-picked onto `v1.0.7` as a second
+commit on top of `adea22f`, without rewriting it. Its tree again equals the work branch tip (empty `git diff`).
+A squash merge of the PR gives one commit if preferred.

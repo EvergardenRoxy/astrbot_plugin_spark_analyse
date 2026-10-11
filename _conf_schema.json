@@ -59,7 +59,7 @@
     "type": "bool",
     "description": "自动识别报告链接",
     "default": true,
-    "hint": "开启后，有权限的人在聊天中发送 Spark 报告链接，并提到“分析”“诊断”“排查”“卡顿”“掉TPS”等词时，自动开始分析，不需要 @ 机器人。关闭后可以用 /spark 命令，或让聊天模型调用 spark_analyze 工具。"
+    "hint": "开启后，有权限的人在聊天中发送 Spark 报告链接，并提到“分析”“诊断”“排查”“卡顿”“掉TPS”等词时，自动开始分析，不需要 @ 机器人；发送 .sparkprofile 文件时直接开始分析。关闭后可以用 /spark 命令（文件须与命令在同一条消息中，不读取引用消息里的文件），或让聊天模型调用 spark_analyze 工具。QQ 发送文件时不能附文字，要分析 QQ 里的文件必须开启本项。"
   },
   "acknowledgement_text": {
     "type": "text",
@@ -99,7 +99,7 @@
       "max": 900,
       "step": 15
     },
-    "hint": "下载报告最多等多久，默认 120 秒，最长 900 秒。网络慢时可以调到 600 或 900。"
+    "hint": "下载报告最多等多久，默认 120 秒，最长 900 秒。网络慢时可以调到 600 或 900。获取聊天中发送的 .sparkprofile 文件也按这个时间。"
   },
   "parse_timeout_seconds": {
     "type": "int",
@@ -116,7 +116,7 @@
     "type": "bool",
     "description": "下载报告时使用代理",
     "default": false,
-    "hint": "默认关闭，直接连接。开启后只有下载 Spark 报告会经过下一项填写的代理，不使用 AstrBot 或系统的代理设置，也不影响模型的连接。代理连不上时不会自动改为直连。"
+    "hint": "默认关闭，直接连接。开启后只有下载 Spark 报告链接会经过下一项填写的代理，不使用 AstrBot 或系统的代理设置，也不影响模型的连接。代理连不上时不会自动改为直连。聊天中发送的 .sparkprofile 文件按 AstrBot 获取附件的方式下载，不经过这个代理。"
   },
   "download_proxy_url": {
     "type": "string",
