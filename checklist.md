@@ -12,6 +12,7 @@
 
 - 当前版本 **1.0.7**，已在 QQ 群（NapCat，AstrBot 4.28.2）实际使用测试通过，分析回复基本符合预期；回复的写法可以在配置“分析回复要求”中自行调整。
 - 自动测试共 125 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
+- 开发分支 `claude/nifty-ritchie-zychiy` 正在加入 Observable 报告支持（见下方“未发布”），该分支的自动测试共 185 项，全部通过；尚未发布，也未并入主分支。
 
 从 1.0.3 起，修改由 Claude Opus 5.5（通过 Claude Code）完成，经项目维护者审阅。修复问题时，先写测试并确认旧代码确实会出错，再改代码，最后跑完全部测试。
 
@@ -39,6 +40,23 @@ python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7
 - **默认只有管理员能用**：新安装默认“仅管理员”，已有的配置保持不变。
 
 ## 各版本做了什么
+
+### 未发布（开发分支）：支持 Observable 模组的报告
+
+1. **可以分析 Observable 报告**
+   - 为什么：Spark 只能说明“时间花在哪个方法上”，而 [Observable](https://github.com/tasgon/observable) 逐个记录实体和方块实体各自占用的 tick 时间，更容易指出“哪种实体、哪台机器、哪个区块在拖慢服务器”，两者互补。
+   - 做了什么：链接格式是 `https://observable.tas.sh/p/报告ID`。插件从 Observable 官方站点取回报告数据，在独立进程里解析，汇总成按类型、维度、区块、单个对象排名的摘要，再交给分析模型。这类报告同样有大小上限（压缩后 16 MiB，解压后 48 MiB）、不跟随跳转、不使用系统代理。
+   - 怎么核对：发送 `帮我分析 https://observable.tas.sh/p/报告ID`，应收到开始提示和分析；测试 `tests/test_observable.py` 覆盖解析、数值计算、异常数据和下载限制。
+2. **看到链接不会自动读取**
+   - 做了什么：和 Spark 链接一样，只有发送者提到“分析”“诊断”“卡顿”等词、使用 `/spark` 命令或由聊天模型调用工具时才会读取；单独发一个 Observable 链接，插件不下载、不响应。
+   - 怎么核对：只发链接或写“看看这个”，插件应无反应（测试 `test_observable_link_needs_a_request_to_analyse`）。
+3. **Spark 和 Observable 一起分析**
+   - 同一条消息里同时发两种链接：合并成一次分析，只回复一次。
+   - 同一个人在同一会话里，30 分钟内（可在配置“Spark 与 Observable 报告的配对时间”中调整，0 为关闭）先后发两种报告：后一次分析会把前一份当作背景一起参考，回复末尾会注明。配对只在内存里，不同的人、不同的会话之间不会互相参考。
+   - 合并前先核对：游戏版本、加载器（Forge 与 NeoForge 视为不同）、采样时间是否重叠或相近。版本或加载器不一致时不合并，并在回复里提醒；采样时间相距较远时，只说明可能是同一台服务器，不把两份数据当成同一时刻。
+   - 怎么核对：测试 `test_both_links_in_one_message_are_merged`、`test_recent_other_report_is_paired_and_noted`、`test_version_mismatch_is_flagged_and_noted`、`test_pairing_is_per_requester_and_expires`。
+4. **暂不支持的部分**
+   - Observable 报告不支持 `compare` 历史对比；不支持本地导出的 json 文件（避免任何 json 文件都被当作报告）；一条消息里最多一个 Spark 报告和一个 Observable 报告，多了会提示。
 
 ### 1.0.7：支持 `.sparkprofile` 文件
 

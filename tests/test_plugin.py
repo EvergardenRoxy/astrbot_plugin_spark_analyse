@@ -881,6 +881,15 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.module.json.loads(calls[2]['prompt'])['report_kind'], 'observable')
         self.assertNotIn('spark', plugin.recent[plugin.owner(Event())])
 
+    async def test_pairing_window_default_matches_the_schema(self):
+        schema = __import__('json').loads((ROOT/'_conf_schema.json').read_text(encoding='utf-8'))
+        plugin = self.agent_plugin([])
+        del plugin.config['history_enabled']
+        self.assertEqual(plugin.pair_window(), schema['pair_window_minutes']['default']*60)
+        for bad, expected in (('x', 0), (None, 0), (-5, 0), (9999, 240*60)):
+            plugin.config['pair_window_minutes'] = bad
+            self.assertEqual(plugin.pair_window(), expected)
+
     async def test_pairing_can_be_disabled(self):
         calls = []
         plugin = self.agent_plugin(calls, {'pair_window_minutes': 0})

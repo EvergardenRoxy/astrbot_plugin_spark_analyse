@@ -303,6 +303,18 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                     await session.close()
         self.assertEqual(len(calls), 2)
 
+    async def test_oversized_observable_file_is_refused_before_reading(self):
+        async def sparse(url, path, **kwargs):
+            with path.open('wb') as f:
+                f.truncate(49*1024*1024)
+        with patch('spark_core.session.download_observable', sparse):
+            session = ReportSession(self.root)
+            try:
+                with self.assertRaisesRegex(ProfileError, '48 MiB'):
+                    await session.load_observable('https://observable.tas.sh/p/Ab12cd')
+            finally:
+                await session.close()
+
     async def test_query_on_an_observable_session_is_refused_by_the_worker(self):
         with patch('spark_core.session.download_observable', self.downloader(report(), [])):
             session = ReportSession(self.root)
