@@ -23,6 +23,7 @@ def import_path(entries, here):
 if __name__ == '__main__':
     sys.path[:] = import_path(sys.path, os.path.dirname(os.path.realpath(__file__)))
 from spark_core.profile import Profile, ProfileError
+from spark_core.observable import ObservableProfile, OBSERVABLE_DECODED_LIMIT
 
 
 def run():
@@ -31,14 +32,18 @@ def run():
         import resource
         resource.setrlimit(resource.RLIMIT_AS, (1536*1024*1024, 1536*1024*1024))
     directory = Path(sys.argv[1])
+    observable = len(sys.argv) > 2 and sys.argv[2] == 'observable'
     try:
         raw_path = directory/'profile.bin'
+        if observable and raw_path.stat().st_size > OBSERVABLE_DECODED_LIMIT:
+            raise ProfileError('报告超限：Observable 报告解压后超过 48 MiB，通常是采样时间太长或实体过多。请缩短采样时间后重新采集')
         if raw_path.stat().st_size > 128*1024*1024:
             raise ProfileError('报告超限：报告解压后超过 128 MiB，通常是采样时间太长。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
-        profile = Profile(raw_path.read_bytes())
+        profile = (ObservableProfile if observable else Profile)(raw_path.read_bytes())
         ready = directory/'ready.tmp'
         overview = profile.overview()
-        overview['evidence_pack'] = profile.evidence_pack()
+        if not observable:
+            overview['evidence_pack'] = profile.evidence_pack()
         encoded = json.dumps(overview, ensure_ascii=False)
         if len(encoded.encode('utf-8')) > 128*1024:
             raise ProfileError('报告证据包超过128 KiB，拒绝发送无界上下文')

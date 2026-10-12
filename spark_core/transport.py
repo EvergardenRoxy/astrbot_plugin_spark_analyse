@@ -24,6 +24,13 @@ def validate_proxy(value):
 LINK = re.compile(r'https://spark\.lucko\.me/([A-Za-z0-9]{6,64})(?![A-Za-z0-9_-]|/[A-Za-z0-9]|\.[A-Za-z0-9])')
 
 
+# Observable (tasgon/observable) report pages live at /p/<id>, optionally with a tab name after the id.
+OBS_TABS = ('individual', 'chunks', 'aggregate', 'traces', 'info')
+OBS_LINK = re.compile(r'https://observable\.tas\.sh/p/([A-Za-z0-9_-]{4,64})(?:/(?:' + '|'.join(OBS_TABS) + r'))?/?'
+                      r'(?![A-Za-z0-9_-]|/[A-Za-z0-9]|\.[A-Za-z0-9])')
+OBS_DECODED_LIMIT = 48*1024*1024
+
+
 def report_id(url):
     match = re.fullmatch(r'https://spark\.lucko\.me/([A-Za-z0-9]{6,64})/?', url)
     if not match:
@@ -46,13 +53,54 @@ async def download(url, path, compressed_limit=16*1024*1024, decoded_limit=128*1
 
 async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy=None):
     key = report_id(url)
+    await _get(f'https://spark-usercontent.lucko.me/{key}', path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy,
+               content_type=('application/x-spark-sampler',), type_error='报告类型不是sampler', gzip_only=False,
+               too_big=SPARK_DECODED_TOO_BIG)
+
+
+SPARK_DECODED_TOO_BIG = ('解压体积超限：报告解压后超过 128 MiB，通常是采样时间太长（例如连续采样数小时）。'
+                         '请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
+COMPRESSED_TOO_BIG = ('下载体积超限：报告文件超过 16 MiB，通常是采样时间太长。'
+                      '请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
+OBS_DECODED_TOO_BIG = '解压体积超限：Observable 报告解压后超过 48 MiB，通常是采样时间太长或实体过多。请缩短采样时间后重新采集'
+
+
+def observable_id(url):
+    match = re.fullmatch(OBS_LINK, url)
+    if not match:
+        raise ProfileError('只接受官方HTTPS Observable报告链接 https://observable.tas.sh/p/报告ID')
+    return match.group(1)
+
+
+async def download_observable(url, path, compressed_limit=16*1024*1024, decoded_limit=OBS_DECODED_LIMIT, timeout_seconds=120, proxy=None):
+    """Fetch the JSON behind an Observable report page: the site's own data endpoint, fixed host, no redirects."""
+    proxy = validate_proxy(proxy) if proxy is not None else None
+    logger.info('Observable download route=%s', 'plugin_proxy' if proxy else 'direct')
+    stats = {'phase': '连接/等待响应头', 'received': 0, 'written': 0, 'started': time.monotonic()}
+    key = observable_id(url)
+    try:
+        await _get(f'https://observable.tas.sh/v1/get/{key}', path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy,
+                   content_type=('application/json', 'text/plain'), type_error='报告类型不是Observable数据', gzip_only=True,
+                   too_big=OBS_DECODED_TOO_BIG)
+    except TimeoutError as exc:
+        elapsed = time.monotonic()-stats['started']
+        detail = f"阶段={stats['phase']}，已接收={stats['received']}字节，已解压={stats['written']}字节，耗时={elapsed:.1f}秒"
+        logger.warning('Observable download timeout: %s', detail)
+        raise TimeoutError(detail) from exc
+
+
+async def _get(url, path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy, *, content_type, type_error, gzip_only, too_big):
     timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=min(30, timeout_seconds))
+    # Observable's site is behind a CDN that may compress; ask only for gzip, which is the one coding we decode.
+    headers = {'Accept-Encoding': 'gzip'} if gzip_only else None
     async with aiohttp.ClientSession(timeout=timeout, auto_decompress=False, trust_env=False) as session:
-        async with session.get(f'https://spark-usercontent.lucko.me/{key}', allow_redirects=False, proxy=proxy) as response:
+        async with session.get(url, allow_redirects=False, proxy=proxy, **({'headers': headers} if headers else {})) as response:
             if response.status != 200:
-                raise ProfileError(f'报告下载失败 HTTP {response.status}')
-            if response.headers.get('Content-Type', '').split(';')[0] != 'application/x-spark-sampler':
-                raise ProfileError('报告类型不是sampler')
+                # Observable answers an unknown or expired id with a 500 rather than a 404.
+                gone = '，Observable 报告可能不存在或已过期，请确认链接' if gzip_only and response.status in (404, 500) else ''
+                raise ProfileError(f'报告下载失败 HTTP {response.status}{gone}')
+            if response.headers.get('Content-Type', '').split(';')[0].strip().lower() not in content_type:
+                raise ProfileError(type_error)
             encoding = response.headers.get('Content-Encoding', '').lower()
             if encoding not in ('', 'identity', 'gzip'):
                 raise ProfileError('不支持的HTTP压缩格式')
@@ -66,7 +114,7 @@ async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds,
                     received += len(chunk)
                     stats['received'] = received
                     if received > compressed_limit:
-                        raise ProfileError('下载体积超限：报告文件超过 16 MiB，通常是采样时间太长。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
+                        raise ProfileError(COMPRESSED_TOO_BIG)
                     data = decoder.decompress(chunk, decoded_limit-written+1) if decoder else chunk
                     written += len(data)
                     stats['written'] = written
@@ -75,7 +123,7 @@ async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds,
                         logger.info('Spark download progress; received_bytes=%s decoded_bytes=%s elapsed=%.1fs', received, written, now-stats['started'])
                         last_progress = now
                     if written > decoded_limit or (decoder and decoder.unconsumed_tail):
-                        raise ProfileError('解压体积超限：报告解压后超过 128 MiB，通常是采样时间太长（例如连续采样数小时）。请缩短采样时间后重新上传，例如 /spark profiler start --timeout 300（5 分钟后自动停止）')
+                        raise ProfileError(too_big)
                     output.write(data)
                 if decoder and (not decoder.eof or decoder.unused_data):
                     raise ProfileError('gzip流截断或存在额外数据')

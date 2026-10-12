@@ -18,6 +18,14 @@ SPIKE_RATIO, SPIKE_MIN_MS = 5, 500
 # this on every platform, unlike method names; TPS is not used because spikes alone can lower it.
 TICK_BUDGET_MS, IDLE_WAIT_BELOW_MSPT = 50, 40
 
+# Observable cost classes: the share of the 50 ms tick budget that entities and block entities alone use.
+OBS_HEAVY_PCT, OBS_NOTABLE_PCT = 50, 20
+# A type (or three) taking at least this share of the measured cost is a concentrated source.
+OBS_DOMINANT_PCT, OBS_CONCENTRATED_PCT = 40, 70
+# Spark and Observable reports are treated as one server when versions agree and the sampling windows are this
+# close (or overlap). Further apart they may still be the same server, but not under the same conditions.
+PAIR_NEAR_SECONDS = 1800
+
 JVM_QUESTION = re.compile(r'JVM|GC|垃圾回收|启动参数|堆内存|Xm[sx]|vm.?args', re.I)
 KEY_VM_ARG = re.compile(r'-(?:Xm[sx]|Xss|XX:[+-]?Use\w*GC\b|XX:[+-]?ZGenerational|XX:(?:Max|Initial|Min)RAMPercentage'
                         r'|XX:MaxGCPauseMillis|XX:[+-]?UseCompactObjectHeaders)', re.I)
@@ -143,10 +151,124 @@ def model_overview(overview, question):
     return {'triage': triage(overview), **view}
 
 
-def user_payload(question, overview, comparison=None, previous=None, comparison_unavailable=None):
-    return json.dumps({'user_observation': question[:2000], 'overview': model_overview(overview, question),
-                       'history_comparison': comparison,
-                       # Why a requested comparison was not made; the plugin also tells the user.
-                       'history_comparison_unavailable': comparison_unavailable,
-                       'previous_review_untrusted': previous[:6000] if comparison and previous else None},
-                      ensure_ascii=False)
+def observable_triage(view):
+    """Signals for an Observable overview, from the same kind of fixed rules as the Spark triage."""
+    runtime, totals = view.get('runtime') or {}, view.get('totals') or {}
+    tps, budget = runtime.get('tps_estimate'), totals.get('tick_budget_pct')
+    if tps is None:
+        load = 'unknown'
+    elif tps < SUSTAINED_TPS:
+        load = 'sustained'
+    elif tps < MILD_TPS:
+        load = 'mild'
+    else:
+        load = 'none'
+    cost = 'unknown' if budget is None else 'heavy' if budget >= OBS_HEAVY_PCT else 'notable' if budget >= OBS_NOTABLE_PCT else 'light'
+    ranked = sorted((view.get('entity_types') or []) + (view.get('block_types') or []), key=lambda row: -(row.get('share_pct') or 0))
+    top3 = round(sum(row.get('share_pct') or 0 for row in ranked[:3]), 1)
+    lead = ranked[0] if ranked else None
+    chunk = (view.get('hot_chunks') or [None])[0]
+    chunk_share = round(100*chunk['ms_per_tick']/totals['observed_ms_per_tick'], 1) if chunk and totals.get('observed_ms_per_tick') else None
+    signals = {'load': load, 'cost': cost, 'tps_estimate': tps, 'observed_ms_per_tick': totals.get('observed_ms_per_tick'),
+               'budget_pct': budget, 'top_type': lead['type'] if lead else None, 'top_type_share_pct': lead.get('share_pct') if lead else None,
+               'top3_share_pct': top3, 'dominant_type': bool(lead and (lead.get('share_pct') or 0) >= OBS_DOMINANT_PCT),
+               'concentrated': top3 >= OBS_CONCENTRATED_PCT, 'hot_chunk_share_pct': chunk_share,
+               'thresholds': {'cost': f'实体与方块实体耗时占 {TICK_BUDGET_MS} 毫秒 tick 预算：>={OBS_HEAVY_PCT}% 为 heavy，>={OBS_NOTABLE_PCT}% 为 notable',
+                              'load': f'TPS 估算值（由 tick 数与时长算出）：<{SUSTAINED_TPS} sustained，<{MILD_TPS} mild',
+                              'dominant': f'单一类型占已测耗时 >={OBS_DOMINANT_PCT}%；前三类合计 >={OBS_CONCENTRATED_PCT}% 视为集中'}}
+    signals['summary'] = _observable_summary(signals)
+    return signals
+
+
+def _observable_summary(s):
+    parts = []
+    if s['tps_estimate'] is not None:
+        parts.append({'none': f"采样期间 TPS 估算约 {s['tps_estimate']}，未见持续过载", 'mild': f"采样期间 TPS 估算约 {s['tps_estimate']}，轻微过载",
+                      'sustained': f"采样期间 TPS 估算约 {s['tps_estimate']}，持续过载", 'unknown': ''}[s['load']])
+    if s['budget_pct'] is not None:
+        parts.append({'light': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']} 毫秒（约占 tick 预算的 {s['budget_pct']}%），负担不重",
+                      'notable': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']} 毫秒（约占 tick 预算的 {s['budget_pct']}%），占比可观",
+                      'heavy': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']} 毫秒（约占 tick 预算的 {s['budget_pct']}%），是 tick 的主要开销",
+                      'unknown': ''}[s['cost']])
+    if s['top_type']:
+        parts.append(f"最耗时的类型是 {s['top_type']}（占已测耗时 {s['top_type_share_pct']}%）" +
+                     ('，耗时集中在少数类型' if s['concentrated'] else '，耗时比较分散'))
+    return '；'.join(p for p in parts if p)+'。'
+
+
+def _norm_loader(value):
+    text = str(value or '').casefold()
+    for name in ('neoforge', 'forge', 'fabric', 'quilt'):
+        if name in text:
+            return name
+    return None
+
+
+def correlate(spark, observable):
+    """Do a Spark and an Observable overview describe the same server at about the same time?
+
+    Pure comparison of what both reports record: Minecraft version, mod loader and sampling windows. The verdict
+    only says whether merging is plausible; it cannot prove identity (two servers can run the same version).
+    """
+    platform, runtime = spark.get('platform') or {}, observable.get('runtime') or {}
+    mc_spark, mc_obs = str(platform.get('minecraft') or ''), str(runtime.get('minecraft') or '')
+    minecraft = 'unknown' if not mc_spark or not mc_obs else 'same' if mc_spark == mc_obs else 'different'
+    loader_obs = _norm_loader(runtime.get('mod_loader'))
+    loader_spark = _norm_loader(' '.join(str(platform.get(k) or '') for k in ('name', 'brand')))
+    if not loader_obs or not loader_spark:
+        # A Bukkit-family server cannot run Observable's loaders; one without a recognisable loader is unknown.
+        loader = 'different' if loader_obs and str(platform.get('name') or '').casefold() == 'bukkit' else 'unknown'
+    else:
+        loader = 'same' if loader_obs == loader_spark else 'different'
+    sampling = spark.get('sampling') or {}
+    s_start, s_end = sampling.get('start_ms'), sampling.get('end_ms')
+    o_start, o_end = runtime.get('start_ms'), runtime.get('end_ms')
+    gap = overlap = None
+    if s_start and s_end and o_start and o_end:
+        gap = max(0, max(s_start, o_start)-min(s_end, o_end))/1000
+        overlap = gap == 0
+    if minecraft == 'different' or loader == 'different':
+        verdict = 'conflict'
+    elif overlap:
+        verdict = 'overlapping'
+    elif gap is not None and gap <= PAIR_NEAR_SECONDS:
+        verdict = 'near'
+    elif gap is not None:
+        verdict = 'apart'
+    else:
+        verdict = 'time_unknown'
+    result = {'verdict': verdict, 'minecraft': minecraft, 'mod_loader': loader,
+              'sampling_gap_seconds': round(gap) if gap is not None else None, 'sampling_windows_overlap': overlap,
+              'near_means': f'采样时间间隔不超过 {PAIR_NEAR_SECONDS//60} 分钟'}
+    median = (spark.get('health') or {}).get('mspt_median')
+    observed = (observable.get('totals') or {}).get('observed_ms_per_tick')
+    if verdict != 'conflict' and median and observed is not None:
+        result['observed_ms_vs_spark_mspt_median_pct'] = round(100*observed/median, 1)
+    return result
+
+
+def model_observable(view, question):
+    """Observable overview for the model: triage first, JVM flags summarised unless the question is about the JVM."""
+    view = copy.deepcopy(view)
+    runtime = view.get('runtime') or {}
+    flags = runtime.get('jvm_flags')
+    if isinstance(flags, str) and flags and not JVM_QUESTION.search(question or ''):
+        runtime['jvm_flags'] = summarize_vm_args(flags)
+    return {'triage': observable_triage(view), **view}
+
+
+def user_payload(question, overview, comparison=None, previous=None, comparison_unavailable=None, *, observable=None, pairing=None):
+    """The user message for the model. Without an Observable report the shape is the Spark-only one, unchanged."""
+    payload = {'user_observation': question[:2000]}
+    if observable is not None:
+        payload['report_kind'] = 'spark+observable' if overview is not None else 'observable'
+    if overview is not None:
+        payload['overview'] = model_overview(overview, question)
+    if observable is not None:
+        payload['observable'] = model_observable(observable, question)
+        payload['pairing'] = pairing
+    payload.update({'history_comparison': comparison,
+                    # Why a requested comparison was not made; the plugin also tells the user.
+                    'history_comparison_unavailable': comparison_unavailable,
+                    'previous_review_untrusted': previous[:6000] if comparison and previous else None})
+    return json.dumps(payload, ensure_ascii=False)

@@ -43,6 +43,12 @@ class FakeSession:
     async def load_file(self, local='', url=''):
         FakeSession.loaded.append(('file', local, url))
         return await self.load(None)
+    observable_changes = {}
+    async def load_observable(self, url):
+        from test_observable import report
+        from spark_core.observable import ObservableProfile
+        FakeSession.loaded.append(('obs', url))
+        return ObservableProfile(report(**FakeSession.observable_changes)).overview()
     async def query(self, **args): return {'rows': [], 'denominator_ms': 100}
     async def close(self): self.closed = True
 
@@ -79,6 +85,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         spec.loader.exec_module(self.module)
 
         FakeSession.loaded = []
+        FakeSession.observable_changes = {}
 
     def tearDown(self):
         self.modules.stop()
@@ -752,5 +759,200 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         none = File('a')
         none.file_ = none.url = None
         self.assertEqual(attachment(none), ('', ''))
+
+    # ---- Observable reports ----
+    OBS = 'https://observable.tas.sh/p/SyntheticObs01'
+    SPARK = 'https://spark.lucko.me/SyntheticReport001'
+
+    def agent_plugin(self, captured, config=None):
+        async def agent(**kwargs):
+            captured.append(kwargs)
+            return types.SimpleNamespace(completion_text='模型结论')
+        return self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent),
+                                       {'analysis_provider_id': 'test', 'history_enabled': True, **(config or {})})
+
+    async def say(self, plugin, text, handler='auto_analyze'):
+        event = Event()
+        event.message_str = text
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            return [r async for r in getattr(plugin, handler)(event)]
+
+    async def test_observable_link_needs_a_request_to_analyse(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        for text in (self.OBS, f'看看这个 {self.OBS}', f'analytics {self.OBS}'):
+            with self.subTest(text=text):
+                self.assertEqual(await self.say(plugin, text), [])
+        self.assertEqual((FakeSession.loaded, calls), ([], []))
+        results = await self.say(plugin, f'帮我分析 {self.OBS}')
+        self.assertEqual(results[-1], '模型结论')
+        self.assertEqual(FakeSession.loaded, [('obs', self.OBS)])
+
+    async def test_observable_only_analysis_has_no_query_tool_and_no_history(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        results = await self.say(plugin, f'/spark {self.OBS} server=s1 compare', 'spark_command')
+        payload = self.module.json.loads(calls[0]['prompt'])
+        self.assertEqual(payload['report_kind'], 'observable')
+        self.assertNotIn('overview', payload)
+        self.assertEqual(payload['observable']['triage']['cost'], 'light')
+        self.assertIsNone(payload['pairing'])
+        self.assertIsNone(calls[0]['tools'])
+        self.assertIn('Observable 报告暂不支持历史对比', results[-1])
+        self.assertFalse((Path(self.temp.name)/'history.sqlite3').exists())
+        self.assertFalse(plugin.sessions or plugin.inflight_reports or plugin.active)
+
+    async def test_both_links_in_one_message_are_merged(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        results = await self.say(plugin, f'分析卡顿 {self.SPARK} {self.OBS} server=s1 problem=lag')
+        payload = self.module.json.loads(calls[0]['prompt'])
+        self.assertEqual(payload['report_kind'], 'spark+observable')
+        self.assertEqual(payload['pairing']['how'], 'same_message')
+        self.assertEqual(payload['pairing']['consistency']['minecraft'], 'same')
+        self.assertEqual(payload['pairing']['consistency']['mod_loader'], 'same')
+        self.assertIn('overview', payload)
+        self.assertEqual(len(calls[0]['tools']), 1)
+        self.assertEqual(sorted(kind for kind, *_ in FakeSession.loaded), ['link', 'obs'])
+        self.assertEqual(len(plugin.history.list(plugin.owner(Event()), 's1', 'lag')), 1)
+        self.assertEqual(sum('已收到' in r for r in results), 1)
+        self.assertFalse(plugin.sessions or plugin.inflight_reports)
+
+    async def test_ambiguous_report_sets_are_refused(self):
+        plugin = self.agent_plugin([])
+        for text in (f'{self.SPARK} https://spark.lucko.me/SyntheticReport002', f'{self.OBS} https://observable.tas.sh/p/SyntheticObs02',
+                     f'{self.SPARK} https://spark.lucko.me/SyntheticReport002 {self.OBS}'):
+            with self.subTest(text=text):
+                results = await self.say(plugin, text, 'spark_command')
+                self.assertEqual(len(results), 1)
+                self.assertIn('observable.tas.sh', results[0])
+        self.assertEqual(FakeSession.loaded, [])
+
+    async def test_observable_link_with_trailing_tab_or_punctuation_is_one_report(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        await self.say(plugin, f'分析 {self.OBS}/chunks. 谢谢', 'auto_analyze')
+        self.assertEqual(FakeSession.loaded, [('obs', self.OBS)])
+
+    async def test_recent_other_report_is_paired_and_noted(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        await self.say(plugin, f'分析 {self.SPARK}')
+        self.assertNotIn('pairing', self.module.json.loads(calls[0]['prompt']))
+        results = await self.say(plugin, f'分析 {self.OBS}')
+        payload = self.module.json.loads(calls[1]['prompt'])
+        self.assertEqual(payload['report_kind'], 'spark+observable')
+        self.assertEqual(payload['pairing']['how'], 'recent_message')
+        self.assertEqual(payload['pairing']['context_only'], 'spark')
+        self.assertIn('已结合你约', results[-1])
+        self.assertIsNone(calls[1]['tools'])
+        # History belongs to the Spark report analysed in its own message, not to the companion.
+        db = sqlite3.connect(Path(self.temp.name)/'history.sqlite3')
+        try:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM reviews').fetchone()[0], 1)
+        finally:
+            db.close()
+
+    async def test_pairing_works_in_the_other_order_too(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        await self.say(plugin, f'分析 {self.OBS}')
+        results = await self.say(plugin, f'分析 {self.SPARK}')
+        payload = self.module.json.loads(calls[1]['prompt'])
+        self.assertEqual(payload['pairing']['context_only'], 'observable')
+        self.assertEqual(len(calls[1]['tools']), 1)
+        self.assertIn('Observable', results[-1])
+
+    async def test_pairing_is_per_requester_and_expires(self):
+        calls = []
+        plugin = self.agent_plugin(calls, {'access_mode': 'all'})
+        await self.say(plugin, f'分析 {self.SPARK}')
+        other = Event()
+        other.message_str = f'分析 {self.OBS}'
+        other.get_sender_id = lambda: 'bob'
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            [r async for r in plugin.auto_analyze(other)]
+        self.assertEqual(self.module.json.loads(calls[1]['prompt'])['report_kind'], 'observable')
+        # Age Alice's Spark report past the 30 minute window.
+        owner = plugin.owner(Event())
+        stamp, view = plugin.recent[owner]['spark']
+        plugin.recent[owner]['spark'] = (stamp-31*60, view)
+        await self.say(plugin, f'分析 {self.OBS}')
+        self.assertEqual(self.module.json.loads(calls[2]['prompt'])['report_kind'], 'observable')
+        self.assertNotIn('spark', plugin.recent[plugin.owner(Event())])
+
+    async def test_pairing_can_be_disabled(self):
+        calls = []
+        plugin = self.agent_plugin(calls, {'pair_window_minutes': 0})
+        await self.say(plugin, f'分析 {self.SPARK}')
+        await self.say(plugin, f'分析 {self.OBS}')
+        self.assertEqual(self.module.json.loads(calls[1]['prompt'])['report_kind'], 'observable')
+        self.assertEqual(plugin.recent, {})
+
+    async def test_version_mismatch_is_flagged_and_noted(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        await self.say(plugin, f'分析 {self.SPARK}')
+        FakeSession.observable_changes = {'diagnostics': {'minecraftVersion': '1.20.1', 'modLoader': 'forge'}}
+        results = await self.say(plugin, f'分析 {self.OBS}')
+        payload = self.module.json.loads(calls[1]['prompt'])
+        self.assertEqual(payload['pairing']['consistency']['verdict'], 'conflict')
+        self.assertIn('不一致', results[-1])
+        self.assertNotIn('已结合', results[-1])
+
+    async def test_duplicate_observable_report_is_quiet(self):
+        plugin = self.agent_plugin([])
+        plugin.inflight_reports.add('obs:SyntheticObs01')
+        event = Event()
+        event.message_str = f'分析 {self.OBS}'
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+        self.assertTrue(event.stopped)
+        event = Event()
+        event.message_str = f'分析 {self.SPARK} {self.OBS}'
+        self.assertEqual([r async for r in plugin.auto_analyze(event)], [])
+
+    async def test_failed_observable_load_cleans_up_and_reports(self):
+        plugin = self.agent_plugin([])
+        class Broken(FakeSession):
+            async def load_observable(self, url):
+                raise self.module.ProfileError('不是可分析的 Observable 报告')
+        Broken.module = self.module
+        event = Event()
+        event.message_str = f'分析 {self.OBS}'
+        with patch.object(self.module, 'ReportSession', Broken):
+            results = [r async for r in plugin.auto_analyze(event)]
+        self.assertIn('不是可分析的 Observable 报告', results[-1])
+        self.assertFalse(plugin.sessions or plugin.inflight_reports or plugin.active)
+
+    async def test_tool_accepts_both_links(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        event = Event()
+        sent = []
+        async def send(message): sent.append(message)
+        event.send = send
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            result = [r async for r in plugin.analyze_tool(event, f'{self.SPARK} {self.OBS}', '分析')]
+            await asyncio.gather(*plugin.background_tasks)
+        self.assertEqual(result, [])
+        self.assertEqual(self.module.json.loads(calls[0]['prompt'])['report_kind'], 'spark+observable')
+        self.assertFalse(event.stopped)
+
+    async def test_terminate_clears_pairing_memory(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        await self.say(plugin, f'分析 {self.SPARK}')
+        self.assertTrue(plugin.recent)
+        await plugin.terminate()
+        self.assertEqual(plugin.recent, {})
+
+    async def test_pairing_memory_is_bounded(self):
+        plugin = self.agent_plugin([])
+        for i in range(100):
+            plugin.remember(f'owner{i}', 'spark', {'x': i})
+        self.assertEqual(len(plugin.recent), 32)
+        self.assertIn('owner99', plugin.recent)
+        self.assertNotIn('owner0', plugin.recent)
+
 
 if __name__ == '__main__': unittest.main()

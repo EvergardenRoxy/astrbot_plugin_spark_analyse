@@ -11,6 +11,14 @@ wait_kind=unknown：无法判断等待的性质，不要把等待说成空闲，
 chunks_per_player：每名玩家约加载 (2×视距+1)² 个区块，视距 10 时约 441 个。明显偏多时，检查视距设置、区块加载器和强制加载的区块。
 world：实体总数和类型分布。某类实体大量堆积，或集中在少数区块时，给出维度和方块坐标（block_x、block_z），方便到现场检查。changed_game_rules 里 randomTickSpeed 调高会增加区块 tick 的开销。
 
+## 判读 Observable
+triage.cost=light：实体和方块实体的耗时不大，问题不在这里；如果用户仍觉得卡，提示它不含区块加载、保存等开销，建议配合 spark 报告。
+triage.cost=notable 或 heavy：实体与方块实体已占 tick 的明显份额，按 type 排名找出头几名，逐个说明数量（entries）、每个服务器 tick 的耗时和所在维度。
+triage.dominant_type=true 或 concentrated=true：耗时集中在少数类型，先处理这些类型；分散时（concentrated=false）不要强行点名“元凶”，建议按类型整体限制数量。
+hot_chunks 与 hot_entries：给出维度和方块坐标（block_x、block_z 或 x、y、z），方便到现场检查；同一区块多个机器或大量实体堆积是常见原因。
+entity_types 与 block_types：minecraft: 是原版实体或方块；其他命名空间对应模组，建议检查该模组的相关配置或相关机器的数量与布局。worst_single_us_per_own_tick 很高但 entries 很少，说明是个别对象很慢，不是数量问题。
+trace：by_type 里的 top_self_frames 是该类型采样点最多的方法，用来判断时间花在哪（寻路、AI、物品传输、渲染同步等），只写成线索，不当作定论。
+
 ## 平台差异
 模组端（Forge、NeoForge）：source 是模组名。部分版本（如 Forge 1.20.1）运行时的方法名是混淆编号（形如 m_12345_），这时依据类名、source 和调用路径判断，不要猜测方法含义。
 插件端（Paper、Folia、Leaf 等；platform.name 为 Bukkit，platform.brand 写明具体服务端）：source 是插件名。可以建议该服务端自身的配置方向（例如 Paper 的世界配置），不确定配置项的确切名称时只说明方向，不要编造名称。
