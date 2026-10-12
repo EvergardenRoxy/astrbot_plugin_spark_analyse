@@ -7,6 +7,29 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## Unreleased
+
+> 通过 **Claude Code** 实现，开发分支 `claude/nifty-ritchie-zychiy`，尚未经维护者实测。实现细节、假设与验证见 [handoff.md](handoff.md) §21。
+
+### 新增
+
+- **支持分析 Observable 模组的报告**（`https://observable.tas.sh/p/报告ID`）：汇总每个实体、方块实体的 tick 耗时，按类型、维度、区块和个体排名，并整理采样调用栈中的热点方法。与 Spark 一样，只在用户提出分析请求（关键词、`/spark` 命令或 `spark_analyze` 工具）时读取，单独发链接不会触发。
+- **Spark 与 Observable 合并分析**：同一条消息里同时给出两者时合并为一次分析；同一发送者在配对时间内先后发送两种报告时，后一次分析自动参考前一份（只作背景，回复末尾注明）。合并前由插件核对游戏版本、加载器和采样时间，不一致时不合并。
+- 新配置项“Spark 与 Observable 报告的配对时间”（`pair_window_minutes`，默认 30 分钟，0 为关闭）。配对信息只保存在内存中。
+
+### 变更
+
+- 分析提示词增加 Observable 的判读规则和两份报告的合并规则（`analysis_policy.md`、`diagnosis_guide.md`）；用户可编辑的“分析回复要求”未改动。
+- 一条消息中的报告数量规则：最多一个 Spark 报告（链接或文件）和一个 Observable 报告。
+
+### 未做
+
+- Observable 暂不支持 `compare` 历史对比、本地导出的 json 文件，也没有供模型追加查询的工具（报告的汇总数据一次给全）。
+
+### 测试
+
+- 单元测试由 125 项增至 183 项。
+
 ## 1.0.7 - 2026-10-11
 
 > 本版本通过 **Claude Code** 依据维护者确认的方案完成修改，并经维护者在 QQ 群实测。实现细节、依据与验证方式见 [handoff.md](handoff.md) §18–§19。

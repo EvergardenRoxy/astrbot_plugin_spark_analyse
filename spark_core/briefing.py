@@ -186,9 +186,9 @@ def _observable_summary(s):
         parts.append({'none': f"采样期间 TPS 估算约 {s['tps_estimate']}，未见持续过载", 'mild': f"采样期间 TPS 估算约 {s['tps_estimate']}，轻微过载",
                       'sustained': f"采样期间 TPS 估算约 {s['tps_estimate']}，持续过载", 'unknown': ''}[s['load']])
     if s['budget_pct'] is not None:
-        parts.append({'light': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']} 毫秒（约占 tick 预算的 {s['budget_pct']}%），负担不重",
-                      'notable': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']} 毫秒（约占 tick 预算的 {s['budget_pct']}%），占比可观",
-                      'heavy': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']} 毫秒（约占 tick 预算的 {s['budget_pct']}%），是 tick 的主要开销",
+        parts.append({'light': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']:.2f} 毫秒（约占 tick 预算的 {s['budget_pct']}%），负担不重",
+                      'notable': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']:.2f} 毫秒（约占 tick 预算的 {s['budget_pct']}%），占比可观",
+                      'heavy': f"实体和方块实体合计每个 tick 约占 {s['observed_ms_per_tick']:.2f} 毫秒（约占 tick 预算的 {s['budget_pct']}%），是 tick 的主要开销",
                       'unknown': ''}[s['cost']])
     if s['top_type']:
         parts.append(f"最耗时的类型是 {s['top_type']}（占已测耗时 {s['top_type_share_pct']}%）" +

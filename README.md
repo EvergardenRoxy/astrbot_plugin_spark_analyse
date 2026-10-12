@@ -62,6 +62,21 @@ https://spark.lucko.me/<报告ID>
 
 收到请求后，插件发送一次确认，完成后直接回复分析。模型调用失败时会按配置顺序尝试备用模型。
 
+## 分析 Observable 报告
+
+除了 Spark，插件也能分析 [Observable](https://github.com/tasgon/observable) 模组（Forge、NeoForge、Fabric）的报告。Observable 记录每个实体、方块实体各自的 tick 耗时和调用栈采样，适合回答“具体是哪些实体、机器、区块在拖慢服务器”；Spark 适合回答“整体卡不卡、时间花在哪”。两者互补。
+
+```text
+帮我分析这个 Observable 报告：
+https://observable.tas.sh/p/<报告ID>
+```
+
+- **和 Spark 一样，只有你提出分析请求时才会读取**：链接必须配合“分析”“诊断”“卡顿”等词或 `/spark` 命令，单独发一个 Observable 链接不会触发任何下载。
+- **同一条消息里同时发 Spark 链接（或 `.sparkprofile` 文件）和 Observable 链接**：合并成一次分析。插件会先核对两份报告的游戏版本、加载器和采样时间，版本或加载器不一致时会提醒并分开看待。
+- **先后发送**：同一个人在同一会话里，在“Spark 与 Observable 报告的配对时间”（默认 30 分钟）内先后分析 Spark 和 Observable 报告时，后一次分析会把前一份当作背景一起参考，并在回复末尾注明；设为 0 可关闭。两份报告的版本或加载器不一致时不会合并。
+- 一条消息里只能有一个 Spark 报告和一个 Observable 报告。Observable 暂不支持 `compare` 历史对比，也不支持本地导出的 json 文件。`spark_analyze` 工具的 `report_url` 可以同时填两个链接。
+- 报告压缩后不超过 16 MiB，解压后不超过 48 MiB；Observable 报告只通过 `observable.tas.sh` 官方站点读取，不跟随跳转。
+
 如果希望由主聊天模型决定何时分析，在人格的工具列表启用 **`spark_analyze`**，并关闭“自动识别报告链接”。消息本身附带 `.sparkprofile` 文件时，主聊天模型调用该工具不必填写链接，插件直接读取文件（不读取引用消息里的文件）。主聊天模型调用该工具后，插件在后台用专用分析模型完成分析，开始提示和结论都由插件直接发送，主聊天模型不再额外回复（因此不会多消耗一次主模型调用）。在 AstrBot 4.27.0 以前的版本中，这一轮对话不会写入主聊天模型的对话历史，不影响分析本身。
 
 报告解压后（或 `.sparkprofile` 文件本身）不能超过 128 MiB。连续采样数小时的报告常会超出，插件会提示缩短采样时间，例如 `/spark profiler start --timeout 300`（5 分钟后自动停止）。
