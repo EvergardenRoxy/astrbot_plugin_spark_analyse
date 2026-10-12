@@ -241,8 +241,10 @@ class CorrelationTests(unittest.TestCase):
         # Forge is not NeoForge.
         self.assertEqual(self.pair(self.NOW, self.NOW+1000, name='Forge')['verdict'], 'conflict')
 
-    def test_bukkit_family_server_cannot_pair_with_observable(self):
-        self.assertEqual(self.pair(self.NOW, self.NOW+1000, name='Bukkit', brand='Paper')['verdict'], 'conflict')
+    def test_hybrid_servers_reporting_as_bukkit_are_not_called_conflicting(self):
+        for brand in ('Arclight', 'Mohist', 'Paper'):
+            result = self.pair(self.NOW, self.NOW+1000, name='Bukkit', brand=brand)
+            self.assertEqual((result['mod_loader'], result['verdict']), ('unknown', 'overlapping'))
 
     def test_missing_fields_are_unknown_not_conflicting(self):
         result = self.pair(self.NOW, self.NOW+1000, minecraft='', name='', brand='')

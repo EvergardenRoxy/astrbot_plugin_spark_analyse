@@ -216,8 +216,8 @@ def correlate(spark, observable):
     loader_obs = _norm_loader(runtime.get('mod_loader'))
     loader_spark = _norm_loader(' '.join(str(platform.get(k) or '') for k in ('name', 'brand')))
     if not loader_obs or not loader_spark:
-        # A Bukkit-family server cannot run Observable's loaders; one without a recognisable loader is unknown.
-        loader = 'different' if loader_obs and str(platform.get('name') or '').casefold() == 'bukkit' else 'unknown'
+        # Hybrid servers (Arclight, Mohist, ...) report as Bukkit while running a mod loader, so this stays unknown.
+        loader = 'unknown'
     else:
         loader = 'same' if loader_obs == loader_spark else 'different'
     sampling = spark.get('sampling') or {}

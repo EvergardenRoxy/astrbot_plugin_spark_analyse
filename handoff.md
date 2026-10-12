@@ -14,7 +14,7 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). 1.0.7 (`.sparkprofile` support, §18) on `claude/charming-archimedes-e9je76`, release branch `v1.0.7` (§19), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`, `v1.0.7`. |
-| Tests | (Observable branch: 183, §21) 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | (Observable branch: 195, §21-§22) 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run by the agent**; the maintainer ran §18 live on 4.28.2 (§18.1) and tested 1.0.7 in a QQ group (§20). |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -1202,7 +1202,7 @@ and from `observable.tas.sh` itself (public JS bundles). Nothing here was run ag
    `LEGACY_REPLY_DIGESTS` entry). Policy rule 5 for Observable tells the model to name the report by its real type.
 6. Version not bumped; CHANGELOG is `## Unreleased`.
 
-### 21.4 Tests (125 -> 183)
+### 21.4 Tests (125 -> 183 at first commit; 195 after §22)
 
 `tests/test_observable.py` (28): cost arithmetic with hand-computed numbers, negative-coordinate chunks, TPS estimate,
 bare export, UUID not forwarded, system-report filter, trace aggregation, malformed/hostile input (deep nesting, node
@@ -1217,3 +1217,38 @@ duplicate in-flight, failed load cleanup, tool path with two links.
 
 No live AstrBot, no real Observable report, no real call to `observable.tas.sh/v1/get/<id>` with a valid id. The
 model's use of the new prompt text is untested with a live model. See §21.1 for the assumptions.
+
+## 22. Independent review of the Observable branch (subagent, no shared context)
+
+A fresh subagent was given only the repository and the three requirements, and told to reproduce each claim in a scratch
+copy. I re-checked every finding against the code before acting. Result: 12 findings, 8 fixed, 4 recorded.
+
+**Fixed (each with a test that fails without the fix; 10 targeted mutations all killed):**
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A `.sparkprofile` attachment bypasses the keyword gate, so an Observable link beside it was read without a request. The tool docstring did not say "only on request". | `handle(..., explicit=False)` from `auto_analyze` drops `obs` sources unless `AUTO_KEYWORDS` matches; tool docstring now says to call only when the user explicitly asks. Spark links beside a file keep their old behaviour (unchanged on purpose). |
+| 2 | Hybrid servers (Arclight/Mohist report as Bukkit while running Forge/Fabric) were called a loader conflict. | A Bukkit platform now gives `mod_loader: unknown`, not `different`. |
+| 3 | A companion from an earlier message was handed to the model even when versions conflicted or sampling times were far apart/unknown. | For `recent_message` pairing, anything other than `overlapping`/`near` drops the companion entirely (`pairing.dropped`), and the reply says it was not merged. Same-message pairs are still merged (the user asked for it). |
+| 4 | One source failing aborted the whole request, and the message always said "Spark分析未完成". | If Spark loaded and Observable fails, analysis continues with Spark and the reply says what was left out; failures name their source (`label`). |
+| 5 | Prompt contradictions (reply prompt's "spark 报告"/"采样占比" vs the Observable rule; policy step 1 only described Spark triage; same-message conflict said "only this one"). | Policy rewritten: step 1 names both triages, rule 5 maps the Spark-only wording to Observable wording, conflict means "describe separately". `reply_prompt.txt` still untouched. Also corrected the profiler-overhead direction (TPS estimate reads low). |
+| 6 | A same-message conflict gave the user no notice. | Footnote added. |
+| 7 | `/spark forget` did not clear pairing memory. | It now does. |
+| 8 | Pairing memory evicted the oldest-inserted owner, so an active user could be dropped. | Least-recently-used order (re-inserted on each write). |
+Test gaps closed: Observable session is closed after parsing, cache key namespace `obs:`, gate with a file, partial failure,
+forget, LRU, the schema/code default of `pair_window_minutes`.
+
+**Recorded, not changed:**
+- Report-controlled strings (type names, mod lines, frames) reach the model after truncation only. Same trust level as
+  Spark text; the policy says all report content is data and the model has no side-effecting tool (K1 in §20 still stands).
+  Forged `minecraftVersion`/`modLoader` can influence the merge verdict, which only changes how the model frames its answer.
+- Worker memory: a crafted 45 MB JSON of 15M empty children peaked at ~1.14 GB RSS against the 1.5 GB `RLIMIT_AS`
+  (rejected, but a near miss). The Spark worker stays alive while the Observable one parses. Valid 46-49 MB inputs parse in
+  3-6 s at ~330 MB. If this matters, lower `OBSERVABLE_DECODED_LIMIT` or count children before building lists.
+- Cross-message pairing identity evidence is only version + loader + time. A Spark link posted without a keyword is never
+  loaded, so it is never remembered ("Spark link, then Observable link with 分析" analyses the Observable report alone).
+  An admin working for several servers in one chat should set `pair_window_minutes` to 0 or use one message.
+- Default ack text and the config default still say "Spark报告" (user-editable); `OBS_TABS` and the id charset remain guesses (§21.1).
+
+**Reviewer's design suggestions kept for the maintainer:** ask before merging across messages instead of attaching silently;
+partial-result policy extended to the Spark side; key pairing on `server=` tags; keep an Observable id hash in history for
+`compare`; one real-worker end-to-end test of the merged flow; trim this file and pin test counts in docs with a test.

@@ -12,7 +12,7 @@
 
 - 当前版本 **1.0.7**，已在 QQ 群（NapCat，AstrBot 4.28.2）实际使用测试通过，分析回复基本符合预期；回复的写法可以在配置“分析回复要求”中自行调整。
 - 自动测试共 125 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
-- 开发分支 `claude/nifty-ritchie-zychiy` 正在加入 Observable 报告支持（见下方“未发布”），该分支的自动测试共 185 项，全部通过；尚未发布，也未并入主分支。
+- 开发分支 `claude/nifty-ritchie-zychiy` 正在加入 Observable 报告支持（见下方“未发布”），该分支的自动测试共 195 项，全部通过；尚未发布，也未并入主分支。
 
 从 1.0.3 起，修改由 Claude Opus 5.5（通过 Claude Code）完成，经项目维护者审阅。修复问题时，先写测试并确认旧代码确实会出错，再改代码，最后跑完全部测试。
 
@@ -20,7 +20,7 @@
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests   # 应显示 Ran 125 tests ... OK
+python -m unittest discover -s tests   # 应显示 Ran 125 tests ... OK（开发分支为 Ran 195 tests）
 python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7.zip
 ```
 
@@ -55,7 +55,10 @@ python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7
    - 同一个人在同一会话里，30 分钟内（可在配置“Spark 与 Observable 报告的配对时间”中调整，0 为关闭）先后发两种报告：后一次分析会把前一份当作背景一起参考，回复末尾会注明。配对只在内存里，不同的人、不同的会话之间不会互相参考。
    - 合并前先核对：游戏版本、加载器（Forge 与 NeoForge 视为不同）、采样时间是否重叠或相近。版本或加载器不一致时不合并，并在回复里提醒；采样时间相距较远时，只说明可能是同一台服务器，不把两份数据当成同一时刻。
    - 怎么核对：测试 `test_both_links_in_one_message_are_merged`、`test_recent_other_report_is_paired_and_noted`、`test_version_mismatch_is_flagged_and_noted`、`test_pairing_is_per_requester_and_expires`。
-4. **暂不支持的部分**
+4. **独立评测与修正**
+   - 做了什么：另起一个不带任何上下文的 AI 子代理独立评测，12 项发现中修复了 8 项：文件旁的 Observable 链接绕过关键词、混合端误判冲突、不一致的前一份报告仍被交给模型、一份失败导致全部失败、提示词互相矛盾、`/spark forget` 不清配对记忆等；其余 4 项记录在 handoff.md §22。
+   - 怎么核对：测试 `test_observable_link_beside_a_file_still_needs_a_request`、`test_unmatched_companion_is_not_sent_to_the_model`、`test_observable_failure_keeps_the_spark_analysis`、`test_forget_also_clears_pairing_memory` 等。
+5. **暂不支持的部分**
    - Observable 报告不支持 `compare` 历史对比；不支持本地导出的 json 文件（避免任何 json 文件都被当作报告）；一条消息里最多一个 Spark 报告和一个 Observable 报告，多了会提示。
 
 ### 1.0.7：支持 `.sparkprofile` 文件

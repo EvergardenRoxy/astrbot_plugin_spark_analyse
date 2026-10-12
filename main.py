@@ -121,7 +121,7 @@ class SparkPlugin(Star):
         # Silent for non-permitted users so the message still reaches other handlers.
         if not self.allowed(event):
             return
-        async for result in self.handle(event, text):
+        async for result in self.handle(event, text, explicit=False):
             yield result
 
     @filter.command('spark')
@@ -134,6 +134,7 @@ class SparkPlugin(Star):
             return
         if text == 'forget':
             try:
+                self.recent.pop(self.owner(event), None)
                 count = await asyncio.to_thread(self.history.delete, self.owner(event))
             except (sqlite3.Error, OSError) as exc:
                 # The delete is one transaction, so nothing was removed. A lock clears on retry; a damaged
@@ -151,7 +152,7 @@ class SparkPlugin(Star):
 
     @filter.llm_tool(name='spark_analyze')
     async def analyze_tool(self, event: AstrMessageEvent, report_url: str = '', observation: str = ''):
-        '''把Spark或Observable性能报告交给插件分析。插件在后台下载报告并用专用分析模型分析，进度和结论会直接发给用户；本工具没有返回内容，调用后不要重复调用，也不要自己推测分析结论。
+        '''把Spark或Observable性能报告交给插件分析。插件在后台下载报告并用专用分析模型分析，进度和结论会直接发给用户；本工具没有返回内容，调用后不要重复调用，也不要自己推测分析结论。只在用户明确要求分析报告时调用，不要因为聊天里出现了报告链接就调用。
 
         Args:
             report_url(string): 官方报告链接，格式为 https://spark.lucko.me/报告ID 或 https://observable.tas.sh/p/报告ID。用户同时给出两种链接时用空格分隔，一次调用即可（插件会合并分析）。用户在这条消息中附带 .sparkprofile 文件时留空，插件直接读取该文件；引用消息里的文件不会读取。
@@ -174,10 +175,13 @@ class SparkPlugin(Star):
         # No return value: AstrBot then ends the main agent's turn without another model call,
         # so the plugin's own messages are the whole reply.
 
-    async def handle(self, event, text, *, stop=True):
+    async def handle(self, event, text, *, stop=True, explicit=True):
         # stop=False for the tool path: the event belongs to the main chat agent, and
         # stopping it aborts the main model's reply.
         sources = self.sources(event, text)
+        if not explicit and not AUTO_KEYWORDS.search(text):
+            # A .sparkprofile attachment starts auto analysis on its own; an Observable link beside it still needs a request.
+            sources = [src for src in sources if src[0] != 'obs']
         owner = self.owner(event)
         providers = self.providers()
         refusal = self.refusal(event, sources, owner, providers, stop)
@@ -196,6 +200,7 @@ class SparkPlugin(Star):
         task = asyncio.current_task()
         self.tasks.add(task)
         session = None
+        label, missing = 'Spark', None
         trace = owner[:8]
         logger.info('Spark [%s] accepted; report=%s', trace, report)
         try:
@@ -215,7 +220,20 @@ class SparkPlugin(Star):
                         overview = await session.load_file(*attachment(source))
                     logger.info('Spark [%s] download/parse success; threads=%s', trace, len(overview.get('threads', [])))
                 if obs_source:
-                    observable = await self.load_observable(obs_source[1], trace)
+                    label = 'Observable'
+                    try:
+                        observable = await self.load_observable(obs_source[1], trace)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        if not spark_source:
+                            raise
+                        # The Spark report is already loaded: carry on with it alone and say what was left out.
+                        logger.warning('Spark [%s] observable skipped: %s', trace, type(exc).__name__)
+                        lost = str(exc) if isinstance(exc, (ProfileError, LoadTimeout)) else type(exc).__name__
+                        obs_source, observable = None, None
+                        missing = f'Observable 报告未能读取（{lost}），本次只分析 Spark 报告'
+                    label = 'Spark'
                 if spark_source:
                     self.remember(owner, 'spark', overview)
                 if obs_source:
@@ -238,6 +256,13 @@ class SparkPlugin(Star):
                                    'note': '上一份是同一发送者几分钟前发的，只作背景，不要重新逐项分析它'}
                 if pairing and overview is not None and observable is not None:
                     pairing['consistency'] = correlate(overview, observable)
+                    if pairing['how'] == 'recent_message' and pairing['consistency']['verdict'] not in ('overlapping', 'near'):
+                        # Not clearly the same server at the same time: do not hand it to the model at all.
+                        if spark_source:
+                            observable = None
+                        else:
+                            overview = None
+                        pairing = dict(pairing, dropped=pairing['consistency']['verdict'])
                 tags = comparison = previous = skipped = None
                 if spark_source:
                     tags = self.tags(text, overview)
@@ -260,19 +285,19 @@ class SparkPlugin(Star):
                     yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(error).__name__}），使用下一个模型继续尝试。')
                 history_id = await self.save_history(owner, tags, overview, result, trace) if spark_source else None
                 logger.info('Spark [%s] history saved=%s; sending final result', trace, history_id or False)
-                yield event.plain_result(plain_text(result)+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing))
+                yield event.plain_result(plain_text(result)+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing, missing))
                 logger.info('Spark [%s] result delivered', trace)
         except asyncio.CancelledError:
             raise
         except LoadTimeout as exc:
             logger.warning('Spark [%s] load failed: %s', trace, str(exc))
-            yield event.plain_result('Spark分析未完成：'+str(exc)+'。请查看下载完成/解析开始日志定位；未生成成功审查记录。')
+            yield event.plain_result(label+'分析未完成：'+str(exc)+'。请查看下载完成/解析开始日志定位；未生成成功审查记录。')
         except ProfileError as exc:
             logger.warning('Spark [%s] report rejected: %s', trace, exc)
-            yield event.plain_result('Spark分析未完成：'+str(exc)+'。未回落主LLM、未生成成功审查记录。')
+            yield event.plain_result(label+'分析未完成：'+str(exc)+'。未回落主LLM、未生成成功审查记录。')
         except Exception as exc:
             logger.warning('Spark analysis failed: %s', type(exc).__name__)
-            yield event.plain_result('Spark分析未完成：'+type(exc).__name__+'。未回落主LLM、未生成成功审查记录。请检查链接、报告类型、体积或专用模型配置。')
+            yield event.plain_result(label+'分析未完成：'+type(exc).__name__+'。未回落主LLM、未生成成功审查记录。请检查链接、报告类型、体积或专用模型配置。')
         finally:
             if session:
                 try:
@@ -315,7 +340,8 @@ class SparkPlugin(Star):
             return
         if owner not in self.recent and len(self.recent) >= 32:
             self.recent.pop(next(iter(self.recent)))
-        entry = self.recent.setdefault(owner, {})
+        entry = self.recent.pop(owner, {})
+        self.recent[owner] = entry
         entry[kind] = (time.monotonic(), overview)
 
     def recent_companion(self, kind, owner):
@@ -487,12 +513,16 @@ class SparkPlugin(Star):
             return None
 
     @staticmethod
-    def footnotes(skipped, history_id, typed, pairing=None):
-        notes = []
-        if pairing and pairing.get('how') == 'recent_message':
+    def footnotes(skipped, history_id, typed, pairing=None, missing=None):
+        notes = [missing] if missing else []
+        if pairing and pairing.get('how') == 'same_message' and (pairing.get('consistency') or {}).get('verdict') == 'conflict':
+            notes.append('两份报告的游戏版本或加载器不一致，可能不是同一台服务器，请分别看待')
+        elif pairing and pairing.get('how') == 'recent_message':
             kind = 'Observable' if pairing['context_only'] == 'observable' else 'Spark'
-            if (pairing.get('consistency') or {}).get('verdict') == 'conflict':
-                notes.append(f'你约 {pairing["minutes_apart"]} 分钟前发送的 {kind} 报告与本次报告的游戏版本或加载器不一致，已分开看待')
+            if pairing.get('dropped') == 'conflict':
+                notes.append(f'你约 {pairing["minutes_apart"]} 分钟前发送的 {kind} 报告与本次报告的游戏版本或加载器不一致，未合并')
+            elif pairing.get('dropped'):
+                notes.append(f'你约 {pairing["minutes_apart"]} 分钟前发送的 {kind} 报告与本次报告的采样时间相距较远或缺失，未合并；需要合并请把两个链接放在同一条消息里')
             else:
                 notes.append(f'已结合你约 {pairing["minutes_apart"]} 分钟前发送的 {kind} 报告一并分析；如果不是同一台服务器，请忽略相关内容')
         if skipped:

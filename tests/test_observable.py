@@ -290,6 +290,22 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ['https://observable.tas.sh/p/Ab12cd'])  # the second load came from the cache
         self.assertEqual([p for p in self.root.glob('spark-*')], [])
 
+    async def test_cache_keys_do_not_collide_with_spark_ids(self):
+        cache = ProfileCache(self.root/'cache.sqlite3', 72)
+        spark_file = self.root/'spark.bin'
+        spark_file.write_bytes(b'spark-bytes')
+        cache.put('Ab12cd', spark_file)
+        with patch('spark_core.session.download_observable', self.downloader(report(), [])):
+            session = ReportSession(self.root, cache=cache)
+            try:
+                view = await session.load_observable('https://observable.tas.sh/p/Ab12cd')
+            finally:
+                await session.close()
+        self.assertEqual(view['kind'], 'observable')
+        target = self.root/'check.bin'
+        self.assertTrue(cache.get('Ab12cd', target) and target.read_bytes() == b'spark-bytes')
+        self.assertTrue(cache.get('obs:Ab12cd', target) and target.read_bytes() == report())
+
     async def test_bad_report_is_rejected_with_plugin_text_and_not_cached(self):
         cache = ProfileCache(self.root/'cache.sqlite3', 72)
         calls = []
