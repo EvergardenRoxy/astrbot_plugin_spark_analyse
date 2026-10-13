@@ -9,7 +9,7 @@ from astrbot.api import logger
 class LoadTimeout(TimeoutError):
     pass
 from pathlib import Path
-from .transport import download, fetch_file, report_id
+from .transport import download, download_observable, fetch_file, observable_id, report_id
 from .profile import ProfileError
 
 
@@ -61,6 +61,23 @@ class ReportSession:
                     target.stat().st_size, self.parse_timeout)
         return await self.parse(key)
 
+    async def load_observable(self, url):
+        """An Observable report page: its JSON is fetched from the site's data endpoint and parsed in the worker."""
+        key = 'obs:'+observable_id(url)
+        target = self.directory/'profile.bin'
+        hit = await self.cache_call('get', key, target, default=False)
+        logger.info('Observable raw cache %s; report=%s', 'hit' if hit else 'miss', key)
+        if not hit:
+            logger.info('Observable download start; timeout=%ss', self.download_timeout)
+            try:
+                await download_observable(url, target, timeout_seconds=self.download_timeout, proxy=self.proxy)
+            except TimeoutError as exc:
+                raise LoadTimeout(f'下载阶段超时（{self.download_timeout}秒）；尚未调用分析模型；{exc}') from exc
+            await self.cache_call('put', key, target)
+        logger.info('Observable download success; decoded_bytes=%s; parse start timeout=%ss',
+                    target.stat().st_size, self.parse_timeout)
+        return await self.parse(key, 'observable')
+
     async def load_file(self, local='', url=''):
         """A .sparkprofile attachment. Not cached: the user still has the file and sends it again."""
         target = self.directory/'profile.bin'
@@ -73,19 +90,23 @@ class ReportSession:
                     target.stat().st_size, self.parse_timeout)
         return await self.parse()
 
-    async def parse(self, key=None):
+    async def parse(self, key=None, kind='spark'):
         """Start the worker on profile.bin and wait for its overview; key names the cache entry it came from."""
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable, str(Path(__file__).with_name('worker.py')), str(self.directory),
+            sys.executable, str(Path(__file__).with_name('worker.py')), str(self.directory), kind,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL)
         try:
             self.overview = await self.wait_file(self.directory/'ready.json', self.parse_timeout)
         except TimeoutError as exc:
             raise LoadTimeout(f'解析/证据包阶段超时（{self.parse_timeout}秒）；尚未调用分析模型') from exc
-        logger.info('Spark parse ready; worker_pid=%s', self.process.pid)
+        memory = self.overview.pop('_worker_memory_limit', None)
+        logger.info('Spark parse ready; worker_pid=%s memory_limit=%s', self.process.pid, memory)
+        if str(memory).startswith('unavailable'):
+            logger.warning('Spark worker runs without a memory limit (%s); a hostile report is bounded only by the parse timeout', memory)
         if 'error' in self.overview:
-            if self.overview['error'].startswith('DecodeError:') and key:
+            # A cached Spark file is only bad when protobuf cannot decode it; any Observable failure refetches.
+            if key and (kind == 'observable' or self.overview['error'].startswith('DecodeError:')):
                 await self.cache_call('discard', key)
             kind, _, reason = self.overview['error'].partition(': ')
             raise ProfileError(reason or f'报告解析失败（{kind}）')

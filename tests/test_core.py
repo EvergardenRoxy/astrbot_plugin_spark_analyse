@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from spark_core.profile import Profile, ProfileError
+from spark_core.profile import MAX_QUERY_OFFSET, Profile, ProfileError
 from spark_core.proto.spark_sampler_pb2 import SamplerData
 from spark_core.history import History, compare
 from spark_core.transport import LINK, report_id
@@ -39,6 +39,32 @@ class CoreTests(unittest.TestCase):
             if change == 'nan': d.threads[0].times[0] = float('nan')
             if change == 'size': d.threads[0].children[0].times.pop()
             with self.assertRaises(ProfileError): Profile(d.SerializeToString())
+
+    def test_query_offset_is_capped_below_the_node_count(self):
+        # The cap applies even when the thread has more nodes, so a large offset cannot rank every node.
+        d = SamplerData()
+        d.metadata.platform_metadata.name = 'NeoForge'
+        d.time_windows.extend([10])
+        t = d.threads.add(name='Server thread', times=[1100], children_refs=range(1100))
+        for i in range(1100):
+            t.children.add(class_name='test.Mod', method_name=f'm{i}', times=[1])
+        p = Profile(d.SerializeToString())
+        self.assertEqual(MAX_QUERY_OFFSET, 1000)
+        for view in ('hotspots', 'children'):
+            with self.subTest(view=view):
+                with self.assertRaisesRegex(ProfileError, 'offset'):
+                    p.query(view=view, offset=MAX_QUERY_OFFSET+1)
+                self.assertEqual(p.query(view=view, offset=980)['next_offset'], 1000)
+                last = p.query(view=view, offset=1000)
+                self.assertEqual(len(last['rows']), 20)
+                self.assertIsNone(last['next_offset'])
+
+    def test_query_ids_reject_bool(self):
+        p = Profile(sample().SerializeToString())
+        for args in ({'thread': True}, {'node': True}, {'offset': True}):
+            with self.subTest(args=args):
+                with self.assertRaises(ProfileError):
+                    p.query(**args)
 
     def test_inconsistent_report_gets_actionable_message(self):
         d = sample()
