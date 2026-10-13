@@ -28,6 +28,8 @@ AUTO_KEYWORDS = re.compile(r'分析|诊断|排查|卡顿|掉tps|analy(?:[sz]e|si
 # characters count as word characters ("调整后compare").
 COMPARE = re.compile(r'(?<![A-Za-z0-9_])compare(?![A-Za-z0-9_])', re.I)
 HISTORY_ERRORS = (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError)
+# Requests that may wait while another analysis runs. Analyses run one at a time; a request beyond this is refused.
+QUEUE_LIMIT = 3
 
 
 def report_files(chain):
@@ -67,7 +69,10 @@ class SparkPlugin(Star):
         self.inflight_reports = set()
         self.tasks = set()
         self.sessions = set()
+        # One analysis at a time; the semaphore wakes waiters in arrival order. waiting counts accepted requests that
+        # do not hold it yet, reserved before any await so two requests cannot both take the last place.
         self.gate = asyncio.Semaphore(1)
+        self.waiting = 0
         # Overviews of the last Spark and Observable report each requester loaded, in memory only, so that a
         # report of the other kind sent shortly after can be read together with it.
         self.recent = {}
@@ -195,6 +200,9 @@ class SparkPlugin(Star):
         obs_source = next((src for src in sources if src[0] == 'obs'), None)
         reports = [self.report_key(src) for src in sources]
         report = ' + '.join(reports)
+        ahead = self.waiting + self.gate.locked()
+        self.waiting += 1
+        queued = True
         self.active.add(owner)
         self.inflight_reports.update(reports)
         task = asyncio.current_task()
@@ -202,9 +210,13 @@ class SparkPlugin(Star):
         session = None
         label, missing = 'Spark', None
         trace = owner[:8]
-        logger.info('Spark [%s] accepted; report=%s', trace, report)
+        logger.info('Spark [%s] accepted; report=%s ahead=%s', trace, report, ahead)
         try:
+            if ahead:
+                yield event.plain_result(f'当前有其他报告正在分析，已为你排队（前面还有 {ahead} 份），轮到时会自动开始。')
             async with self.gate:
+                self.waiting -= 1
+                queued = False
                 acknowledgement = str(self.config.get('acknowledgement_text', '已收到Spark报告，开始分析流程。')).strip()
                 if acknowledgement:
                     yield event.plain_result(acknowledgement[:1000])
@@ -299,6 +311,9 @@ class SparkPlugin(Star):
             logger.warning('Spark analysis failed: %s', type(exc).__name__)
             yield event.plain_result(label+'分析未完成：'+type(exc).__name__+'。未回落主LLM、未生成成功审查记录。请检查链接、报告类型、体积或专用模型配置。')
         finally:
+            if queued:
+                # Cancelled or failed while waiting: give the place back.
+                self.waiting -= 1
             if session:
                 try:
                     await session.close()
@@ -399,8 +414,10 @@ class SparkPlugin(Star):
             logger.info('Spark duplicate in-flight report skipped')
             # The tool path gets no main-model reply, so silence would leave the user with nothing.
             return '' if stop else '这份Spark报告正在分析中，完成后会直接发送结果。'
-        if owner in self.active or self.gate.locked():
-            return '已有Spark分析正在执行，请稍后再试。'
+        if owner in self.active:
+            return '你的上一份报告还在分析或排队，完成后再发送下一份。'
+        if self.waiting >= QUEUE_LIMIT:
+            return f'当前排队的报告已满（{QUEUE_LIMIT} 份），请稍后再试。'
         return None
 
     def new_session(self):

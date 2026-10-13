@@ -100,7 +100,10 @@ class ReportSession:
             self.overview = await self.wait_file(self.directory/'ready.json', self.parse_timeout)
         except TimeoutError as exc:
             raise LoadTimeout(f'解析/证据包阶段超时（{self.parse_timeout}秒）；尚未调用分析模型') from exc
-        logger.info('Spark parse ready; worker_pid=%s', self.process.pid)
+        memory = self.overview.pop('_worker_memory_limit', None)
+        logger.info('Spark parse ready; worker_pid=%s memory_limit=%s', self.process.pid, memory)
+        if str(memory).startswith('unavailable'):
+            logger.warning('Spark worker runs without a memory limit (%s); a hostile report is bounded only by the parse timeout', memory)
         if 'error' in self.overview:
             # A cached Spark file is only bad when protobuf cannot decode it; any Observable failure refetches.
             if key and (kind == 'observable' or self.overview['error'].startswith('DecodeError:')):

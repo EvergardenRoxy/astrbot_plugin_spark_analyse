@@ -947,6 +947,108 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('模型结论', results[-1])
         self.assertFalse(plugin.sessions or plugin.inflight_reports)
 
+    def queue_plugin(self):
+        """A plugin whose model call for sender 'a' blocks until released; records the order of model calls."""
+        order, release = [], asyncio.Event()
+        async def agent(**kwargs):
+            sender = kwargs['event'].get_sender_id()
+            order.append(sender)
+            if sender == 'a':
+                await release.wait()
+            return types.SimpleNamespace(completion_text='结论'+sender)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent),
+                                         {'analysis_provider_id': 'test', 'access_mode': 'all'})
+        return plugin, order, release
+
+    @staticmethod
+    def person(name, report):
+        event = Event()
+        event.message_str = f'分析 https://spark.lucko.me/Report{report}'
+        event.get_sender_id = lambda: name
+        return event
+
+    async def start(self, plugin, event):
+        task = asyncio.create_task(self.collect(plugin, event))
+        for _ in range(50):
+            await asyncio.sleep(0)
+        return task
+
+    @staticmethod
+    async def collect(plugin, event):
+        return [r async for r in plugin.auto_analyze(event)]
+
+    @staticmethod
+    async def settle(*awaitables):
+        # A queue bug shows up as a request waiting forever; fail instead of hanging the suite.
+        return await asyncio.wait_for(asyncio.gather(*awaitables), 10)
+
+    async def test_requests_wait_in_order_while_another_analysis_runs(self):
+        plugin, order, release = self.queue_plugin()
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            first = await self.start(plugin, self.person('a', 'AAAAAA'))
+            second = await self.start(plugin, self.person('b', 'BBBBBB'))
+            third = await self.start(plugin, self.person('c', 'CCCCCC'))
+            self.assertEqual(order, ['a'])
+            self.assertEqual(plugin.waiting, 2)
+            release.set()
+            results = await self.settle(first, second, third)
+        self.assertEqual(order, ['a', 'b', 'c'])
+        self.assertNotIn('排队', ''.join(results[0]))
+        self.assertIn('前面还有 1 份', results[1][0])
+        self.assertIn('前面还有 2 份', results[2][0])
+        self.assertEqual([r[-1] for r in results], ['结论a', '结论b', '结论c'])
+        self.assertEqual(plugin.waiting, 0)
+        self.assertFalse(plugin.gate.locked() or plugin.active or plugin.inflight_reports or plugin.tasks)
+
+    async def test_full_queue_and_second_request_of_one_sender_are_refused(self):
+        plugin, order, release = self.queue_plugin()
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            running = [await self.start(plugin, self.person('a', 'AAAAAA'))]
+            for i in range(self.module.QUEUE_LIMIT):
+                running.append(await self.start(plugin, self.person(f'q{i}', f'QUEUE{i}x')))
+            self.assertEqual(plugin.waiting, self.module.QUEUE_LIMIT)
+            full, again = await self.settle(self.collect(plugin, self.person('late', 'LATEEE')),
+                                            self.collect(plugin, self.person('q0', 'Q0AGAIN')))
+            release.set()
+            await self.settle(*running)
+        self.assertEqual(full, [f'当前排队的报告已满（{self.module.QUEUE_LIMIT} 份），请稍后再试。'])
+        self.assertIn('还在分析或排队', again[0])
+        self.assertNotIn('late', order)
+        self.assertEqual(len(order), 1+self.module.QUEUE_LIMIT)
+
+    async def test_cancelled_waiter_gives_its_place_back(self):
+        plugin, order, release = self.queue_plugin()
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            first = await self.start(plugin, self.person('a', 'AAAAAA'))
+            waiter = await self.start(plugin, self.person('b', 'BBBBBB'))
+            self.assertEqual(plugin.waiting, 1)
+            waiter.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(waiter, 10)
+            self.assertEqual(plugin.waiting, 0)
+            self.assertNotIn(plugin.owner(self.person('b', 'x')), plugin.active)
+            self.assertNotIn('ReportBBBBBB', plugin.inflight_reports)
+            release.set()
+            await self.settle(first)
+        self.assertEqual(order, ['a'])
+        self.assertFalse(plugin.gate.locked() or plugin.active or plugin.inflight_reports)
+
+    async def test_tool_request_is_queued_with_a_notice(self):
+        plugin, order, release = self.queue_plugin()
+        sent = []
+        tool_event = self.person('b', 'BBBBBB')
+        async def send(result): sent.append(result)
+        tool_event.send = send
+        with patch.object(self.module, 'ReportSession', FakeSession):
+            first = await self.start(plugin, self.person('a', 'AAAAAA'))
+            [r async for r in plugin.analyze_tool(tool_event, 'https://spark.lucko.me/ReportBBBBBB')]
+            for _ in range(50):
+                await asyncio.sleep(0)
+            self.assertIn('前面还有 1 份', sent[0])
+            release.set()
+            await self.settle(first, *plugin.background_tasks)
+        self.assertEqual(sent[-1], '结论b')
+
     async def test_failed_observable_is_not_replaced_by_an_earlier_one(self):
         calls = []
         plugin = self.agent_plugin(calls)

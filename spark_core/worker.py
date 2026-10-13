@@ -25,12 +25,34 @@ if __name__ == '__main__':
 from spark_core.profile import Profile, ProfileError
 from spark_core.observable import ObservableProfile, OBSERVABLE_DECODED_LIMIT
 
+MEMORY_LIMIT = 1536*1024*1024
+# Key the host removes from ready.json and logs; it is not part of the overview.
+MEMORY_KEY = '_worker_memory_limit'
+
+
+def cap_memory(resource):
+    """Cap the address space at MEMORY_LIMIT, or at a lower limit already inherited; returns what happened.
+
+    An unprivileged process cannot raise its hard limit, so asking for 1.5 GiB under systemd `LimitAS=` or
+    `ulimit -v` below that used to kill the worker before it could report anything. The stricter limit is kept
+    instead. If the platform refuses the call, parsing continues without a cap and the host logs it.
+    """
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        limit = min([MEMORY_LIMIT, *(v for v in (soft, hard) if v != resource.RLIM_INFINITY and v >= 0)])
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    except (ValueError, OSError) as exc:
+        return 'unavailable: '+type(exc).__name__
+    return 'set' if limit == MEMORY_LIMIT else f'inherited {limit}'
+
 
 def run():
     parent = os.getppid()
-    if sys.platform != 'win32':
+    if sys.platform == 'win32':
+        memory = 'unsupported'
+    else:
         import resource
-        resource.setrlimit(resource.RLIMIT_AS, (1536*1024*1024, 1536*1024*1024))
+        memory = cap_memory(resource)
     directory = Path(sys.argv[1])
     observable = len(sys.argv) > 2 and sys.argv[2] == 'observable'
     try:
@@ -47,7 +69,7 @@ def run():
         encoded = json.dumps(overview, ensure_ascii=False)
         if len(encoded.encode('utf-8')) > 128*1024:
             raise ProfileError('报告证据包超过128 KiB，拒绝发送无界上下文')
-        ready.write_text(encoded, encoding='utf-8')
+        ready.write_text(json.dumps({**overview, MEMORY_KEY: memory}, ensure_ascii=False), encoding='utf-8')
         ready.replace(directory/'ready.json')
         sequence = 0
         while not (directory/'stop').exists():
@@ -73,7 +95,7 @@ def run():
         # Chat shows only plugin-authored ProfileError text; other messages can carry local paths.
         reason = str(exc)[:200] if isinstance(exc, ProfileError) else ''
         failed = directory/'ready.tmp'
-        failed.write_text(json.dumps({'error': type(exc).__name__+': '+reason}), encoding='utf-8')
+        failed.write_text(json.dumps({'error': type(exc).__name__+': '+reason, MEMORY_KEY: memory}), encoding='utf-8')
         failed.replace(directory/'ready.json')
         raise
 

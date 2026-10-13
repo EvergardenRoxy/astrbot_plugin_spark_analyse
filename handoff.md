@@ -1270,3 +1270,37 @@ Mutation check in a scratch copy (each fix reverted alone, the listed tests run)
 
 Limits of S1: a bare domain without `www.` or a scheme (`evil.example`) is not detected; the 3000-character cap is a
 constant, not a config item. Not verified on a live chat platform.
+
+## 24. Review report follow-up: S2 short queue, B4 memory cap
+
+Requested by the maintainer: S2 as a short queue only (no cooldown, no per-user quota for now), fix B4, then add tests.
+
+**S2: short queue (`main.py`).** Analyses still run one at a time on `self.gate` (`asyncio.Semaphore(1)`, which wakes
+waiters in arrival order on Python 3.12+, the AstrBot minimum). What changed:
+- `refusal()` no longer refuses because the gate is held. It refuses when the sender (`owner`) already has a request
+  running or queued ("你的上一份报告还在分析或排队…"), or when `self.waiting >= QUEUE_LIMIT` (3).
+- `handle()` reserves the place before any `await`/`yield`: `ahead = self.waiting + self.gate.locked()`, then
+  `self.waiting += 1`, so two requests cannot both take the last place. A request with `ahead > 0` gets one notice
+  ("前面还有 N 份"), then waits on the gate; on acquiring it `waiting` is decremented. `finally` gives the place back
+  when the request was cancelled or failed while still waiting (`queued` flag).
+- Queued requests are in `self.tasks`, so `terminate()` cancels them as before. Duplicate-report and access checks are
+  unchanged and still come first.
+- There is no wait timeout: a queued request can wait for up to three full analyses ahead of it.
+
+**B4: worker memory cap (`spark_core/worker.py`, `session.py`).** `cap_memory(resource)` sets `RLIMIT_AS` to the
+smallest of 1.5 GiB and the finite inherited soft/hard limits, for both soft and hard, so it never tries to raise
+the hard limit (the K2 failure). `ValueError`/`OSError` from `getrlimit`/`setrlimit` return `unavailable: <type>`
+and parsing continues without a cap (handoff §20 option (a)). The result goes into `ready.json` as
+`_worker_memory_limit` (both the success and the error payload). `ReportSession.parse()` pops it before the
+overview is used, logs it on the `parse ready` line, and warns when the cap is unavailable.
+
+| Change | Tests |
+|---|---|
+| S2 queue | `test_requests_wait_in_order_while_another_analysis_runs`, `test_full_queue_and_second_request_of_one_sender_are_refused`, `test_cancelled_waiter_gives_its_place_back`, `test_tool_request_is_queued_with_a_notice` (each wait bounded by 10 s, so a queue bug fails instead of hanging) |
+| B4 cap | `tests/test_worker_memory.py`: `cap_memory` with a fake `resource` (no limit, lower inherited soft/hard, higher inherited, refused call); real worker on Linux with no limit (`/proc/<pid>/limits` shows 1.5 GiB) and under the K2 reproduction limit `1200000*1024` (parses, keeps that limit); host pops and logs the status, warns when unavailable, still raises the worker's error |
+
+Mutation check in a scratch copy (each change reverted alone, the tests above run): old busy refusal, no queue
+limit, no queue notice, no place returned on cancel, no dequeue on acquire, old fixed 1.5 GiB cap, no exception
+catch, status not popped, no warning: all 9 killed, none hangs. Full suite:
+216 tests OK. Not verified on macOS or on a live chat platform.
+
