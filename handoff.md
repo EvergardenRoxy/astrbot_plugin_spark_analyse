@@ -14,7 +14,7 @@ CHANGELOG for that). `checklist.md` is the plain-language Chinese companion for 
 | Decisions applied | D1=A (purge history while disabled), D2=B (auto-analyze silent for non-permitted users), D4=delete stale tool, D5=add CI. D3/F7 untouched. |
 | Extra finding | S1: a failed history write discarded a finished analysis (reproduced before fixing) |
 | Version | 1.0.6 (§16), release branch `v1.0.6` (§17), merged into `main` via PR #4 (`654e24e`). 1.0.7 (`.sparkprofile` support, §18) on `claude/charming-archimedes-e9je76`, release branch `v1.0.7` (§19), not yet merged. 1.0.5 (§13) was merged into `main` via PR #3 (`525634f`, a merge commit of `v1.0.5`, which carries `v1.0.4`). 1.0.3 (§7) was merged via PR #2 (`9a9bad2`). Release branches: `v1.0.3`, `v1.0.4`, `v1.0.5`, `v1.0.6`, `v1.0.7`. |
-| Tests | 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
+| Tests | (Observable branch: 195, §21-§22) 51 -> 67 (1.0.3) -> 71 (1.0.4) -> 99 (1.0.5, §10-§12) -> 104 (1.0.6, §16) -> 125 (1.0.7, §18), all passing locally (Python 3.13) and in CI (3.12, 3.13) |
 | AstrBot evidence | Read from PyPI wheels, never executed: 4.28.2 and 4.16.0 in full; `internal.py` only for 4.20.0, 4.24.0, 4.26.0/.4/.8, 4.27.0, 4.28.0. **No live AstrBot run by the agent**; the maintainer ran §18 live on 4.28.2 (§18.1) and tested 1.0.7 in a QQ group (§20). |
 
 Method used per batch: write the tests -> confirm they fail on the old code -> change code -> run the full suite.
@@ -1122,3 +1122,201 @@ config or test changed; tests stay at 125.
 **Branches:** committed on `claude/charming-archimedes-e9je76`, then cherry-picked onto `v1.0.7` as a second
 commit on top of `adea22f`, without rewriting it. Its tree again equals the work branch tip (empty `git diff`).
 A squash merge of the PR gives one commit if preferred.
+
+## 21. Observable report support (unreleased, branch `claude/nifty-ritchie-zychiy`)
+
+Task from the maintainer (autonomous, unattended session, no PR): support analysing reports of the Observable mod
+(`tasgon/observable`), (a) never reading an Observable link unless the user asks for analysis, (b) a Spark report
+and an Observable report sent by the same user close in time point at the same server, so analyse them together,
+(c) both links in one message. The maintainer's working rule (§1: propose a plan, wait for a decision) could not
+be followed because nobody was available; every decision below is mine and is open for review. Base: `main` @ `2ec768e`
+(1.0.7, no version bump; the CHANGELOG section is `## Unreleased`).
+
+### 21.1 What Observable is, and the evidence
+
+Read from `github.com/tasgon/observable` (shallow clone, HEAD `8348c79`; the web viewer's server is closed source)
+and from `observable.tas.sh` itself (public JS bundles). Nothing here was run against a real report.
+- The mod measures `System.nanoTime()` around each entity tick, block-entity tick and random block/fluid tick
+  (`LevelMixin`, `ServerLevelMixin`) and samples the server thread's Java stack for the object being ticked
+  (`TaggedSampler`, 3 ms +- 1). It records no TPS/MSPT, no thread tree, no GC.
+- Upload: `Profiler.uploadProfile` POSTs gzip JSON `{data: ProfilingData, diagnostics}` to
+  `https://observable.tas.sh/v1/add` (configurable by the server owner) and gets the report URL back as text.
+- Viewer: route `/p/<id>` (+ tab suffixes `individual|chunks|aggregate|traces|info`); its loader fetches
+  `/v1/get/<id>` and destructures `{data, diagnostics}`. An unknown id gives HTTP 500 `{"message":"Internal Error"}`
+  (probed). Locally exported files (`ProfileExporter`) are the bare `ProfilingData` without diagnostics.
+- Units: `Entry.rate` = ns per own tick (`time / ticks`); `ticks` = ticks that object ran; `ProfilingData.ticks` =
+  server ticks while profiling. The viewer's own aggregate is `rate * ticks / total_ticks` per object, shown as
+  `rate/1e3` microseconds. The plugin uses the same formula and reports ms per server tick.
+- Block names are translation keys for random-tick blocks (`block.minecraft.x`), registry ids for block entities and
+  fluids; `normalize_type` maps the first form to `minecraft:x`.
+- `diagnostics`: `user` (profiling player UUID, deliberately dropped), `start` (epoch ms), `duration` (ms),
+  `minecraftVersion`, `modLoader` (`ArchitecturyTarget`, so `forge|fabric|neoforge`), `observableVersion`,
+  `additionalDiagnostics` {System Report, Mods}. The system report is filtered to an allow-list of keys; JVM flags
+  are summarised like Spark's unless the question is about the JVM; the mod list is capped at 120 names.
+
+**Unverified assumptions (check first if something fails live):**
+1. The report id character set. I could not obtain a real link; `OBS_LINK` accepts `[A-Za-z0-9_-]{4,64}`.
+2. `GET /v1/get/<id>` returns `application/json` (accepted: also `text/plain`) and is readable without cookies or
+   headers; gzip is requested explicitly (`Accept-Encoding: gzip`), other codings are refused.
+3. The 500-for-missing-id behaviour is mapped to "may not exist or expired" for 404 and 500 only.
+4. Method/class names are remapped by the mod only for 1.21 (`Remapper` fetches `1_21` mappings), so traces from
+   other versions may be obfuscated; the prompt tells the model not to attribute mods from class names alone.
+
+### 21.2 Design
+
+| Piece | Where | Notes |
+|---|---|---|
+| Parser | `spark_core/observable.py` | Pure Python, no protobuf. Runs in the existing worker (`worker.py` takes `observable` as argv[2]) so JSON memory is under the same `RLIMIT_AS`. Decoded limit 48 MiB (Python objects are far larger than the text), trace nodes 1,000,000, depth 600, 500,000 entries. Output capped (12 types per kind, 10 individuals, 8 chunks, 8 dimensions, 8+5 frames); measured payload ~9 KB for a 12 MB synthetic report. |
+| Transport | `transport.py` | `_download` split into `_get`; Spark behaviour unchanged (125 old tests still pass untouched). `download_observable`: fixed host, fixed endpoint, no redirects, `trust_env=False`, optional download proxy, 16 MiB compressed. |
+| Cache | `session.load_observable` | Same `ProfileCache`, key `obs:<id>`. Any Observable parse failure discards the cache entry (cheap refetch). |
+| Triage / payload | `briefing.py` | `observable_triage` (labels `cost`, `load`, `dominant_type`, `concentrated`), `correlate`, `model_observable`, `user_payload(..., observable=, pairing=)`. Without Observable the payload keys are exactly the old ones (test pins it). Thresholds live only here (`OBS_*`, `PAIR_NEAR_SECONDS`); prompt files use labels. |
+| Flow | `main.py handle()` | `sources()` now also returns `('obs', id)`. Allowed sets: one Spark source and/or one Observable source. In-flight key per source; a duplicate of either is a duplicate. Observable gets its own short-lived session, closed right after parsing (no call tree to query). Observable-only runs pass `tools=None` to `tool_loop_agent` (`tools: ToolSet | None` in 4.28.2, read from the wheel). |
+| Tool | `analyze_tool` docstring | `report_url` may hold both links separated by a space. |
+
+**The three requested behaviours:**
+- *Do not read on sight.* `auto_analyze` requires `AUTO_KEYWORDS` for an Observable link exactly as for a Spark link
+  (a file attachment remains the only keyword-free trigger). `/spark` and the tool are explicit requests.
+  Tests: `test_observable_link_needs_a_request_to_analyse` (also "analytics", "看看这个" and a bare link).
+- *Same message.* Merged; `pairing.how=same_message`; `correlate()` is still run and its verdict reaches the model.
+- *Close in time, same user.* In-memory `self.recent[owner][kind] = (monotonic, overview)`; `owner` is the existing
+  hash of origin + sender, so pairing never crosses people or chats. At most 32 owners (oldest dropped), cleared in
+  `terminate()`, window `pair_window_minutes` (default 30, 0 = off, clamp 240). The companion overview is passed as
+  context only. History saving/comparison apply only to a Spark report analysed in the current message, never to a
+  companion. Reply footnote states the pairing ("已结合你约 N 分钟前发送的 X 报告"), or a conflict notice.
+- *Same server check* (`correlate`): Minecraft version equal, loader equal (`neoforge` is not `forge`; a Bukkit-family
+  Spark platform conflicts with Observable's loaders), sampling windows overlap / gap <= 30 min / further apart / unknown.
+  Verdict `conflict|overlapping|near|apart|time_unknown`. It cannot prove identity (two servers on the same version
+  look the same); the prompt only lets the model merge on overlapping/near and forbids number comparison on
+  apart/time_unknown. `observed_ms_vs_spark_mspt_median_pct` is offered unless conflict.
+
+### 21.3 Decisions I made without the maintainer (revisit)
+
+1. Observable-only runs have no query tool. Alternative: a second FunctionTool over the worker (needs the session kept
+   alive and a `query` for the JSON tree). Not needed while the summary is complete; add if models ask for more.
+2. `compare`/history is Spark-only. Observable has no stable server fingerprint (no system stats beyond a text blob).
+3. No `.json` file support: any `.json` attachment would auto-trigger analysis (file attachments need no keyword).
+4. Cross-message pairing is on by default (30 min). It changes what the model sees without the user asking; the reply
+   says so, and `0` turns it off. If the maintainer prefers opt-in, change the schema default to 0 (the code fallback
+   in `pair_window()` is 30, keep the two aligned like `access_mode`, §6).
+5. `reply_prompt.txt` untouched (it says "spark 报告" in its closing sentence; changing it would need a new
+   `LEGACY_REPLY_DIGESTS` entry). Policy rule 5 for Observable tells the model to name the report by its real type.
+6. Version not bumped; CHANGELOG is `## Unreleased`.
+
+### 21.4 Tests (125 -> 183 at first commit; 195 after §22)
+
+`tests/test_observable.py` (28): cost arithmetic with hand-computed numbers, negative-coordinate chunks, TPS estimate,
+bare export, UUID not forwarded, system-report filter, trace aggregation, malformed/hostile input (deep nesting, node
+and depth limits, wrong types, bool-as-number), output caps, link regex table, fixed-host/no-redirect/gzip/size
+limits for the download, and real-worker session tests (cache hit, bad report not cached, query refused).
+`tests/test_briefing.py` (+12): cost/load classes at their boundaries, dominant/concentrated, Spark-only payload keys
+unchanged, `correlate` (overlap, near/apart at the constant, conflicts, Bukkit, unknowns, ratio).
+`tests/test_plugin.py` (+14): the flows above plus ambiguity refusals, per-requester/expiry/disable/bounded memory,
+duplicate in-flight, failed load cleanup, tool path with two links.
+
+### 21.5 Not verified
+
+No live AstrBot, no real Observable report, no real call to `observable.tas.sh/v1/get/<id>` with a valid id. The
+model's use of the new prompt text is untested with a live model. See §21.1 for the assumptions.
+
+## 22. Independent review of the Observable branch (subagent, no shared context)
+
+A fresh subagent was given only the repository and the three requirements, and told to reproduce each claim in a scratch
+copy. I re-checked every finding against the code before acting. Result: 12 findings, 8 fixed, 4 recorded.
+
+**Fixed (each with a test that fails without the fix; 10 targeted mutations all killed):**
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A `.sparkprofile` attachment bypasses the keyword gate, so an Observable link beside it was read without a request. The tool docstring did not say "only on request". | `handle(..., explicit=False)` from `auto_analyze` drops `obs` sources unless `AUTO_KEYWORDS` matches; tool docstring now says to call only when the user explicitly asks. Spark links beside a file keep their old behaviour (unchanged on purpose). |
+| 2 | Hybrid servers (Arclight/Mohist report as Bukkit while running Forge/Fabric) were called a loader conflict. | A Bukkit platform now gives `mod_loader: unknown`, not `different`. |
+| 3 | A companion from an earlier message was handed to the model even when versions conflicted or sampling times were far apart/unknown. | For `recent_message` pairing, anything other than `overlapping`/`near` drops the companion entirely (`pairing.dropped`), and the reply says it was not merged. Same-message pairs are still merged (the user asked for it). |
+| 4 | One source failing aborted the whole request, and the message always said "Spark分析未完成". | If Spark loaded and Observable fails, analysis continues with Spark and the reply says what was left out; failures name their source (`label`). |
+| 5 | Prompt contradictions (reply prompt's "spark 报告"/"采样占比" vs the Observable rule; policy step 1 only described Spark triage; same-message conflict said "only this one"). | Policy rewritten: step 1 names both triages, rule 5 maps the Spark-only wording to Observable wording, conflict means "describe separately". `reply_prompt.txt` still untouched. Also corrected the profiler-overhead direction (TPS estimate reads low). |
+| 6 | A same-message conflict gave the user no notice. | Footnote added. |
+| 7 | `/spark forget` did not clear pairing memory. | It now does. |
+| 8 | Pairing memory evicted the oldest-inserted owner, so an active user could be dropped. | Least-recently-used order (re-inserted on each write). |
+Test gaps closed: Observable session is closed after parsing, cache key namespace `obs:`, gate with a file, partial failure,
+forget, LRU, the schema/code default of `pair_window_minutes`.
+
+**Recorded, not changed:**
+- Report-controlled strings (type names, mod lines, frames) reach the model after truncation only. Same trust level as
+  Spark text; the policy says all report content is data and the model has no side-effecting tool (K1 in §20 still stands).
+  Forged `minecraftVersion`/`modLoader` can influence the merge verdict, which only changes how the model frames its answer.
+- Worker memory: a crafted 45 MB JSON of 15M empty children peaked at ~1.14 GB RSS against the 1.5 GB `RLIMIT_AS`
+  (rejected, but a near miss). The Spark worker stays alive while the Observable one parses. Valid 46-49 MB inputs parse in
+  3-6 s at ~330 MB. If this matters, lower `OBSERVABLE_DECODED_LIMIT` or count children before building lists.
+- Cross-message pairing identity evidence is only version + loader + time. A Spark link posted without a keyword is never
+  loaded, so it is never remembered ("Spark link, then Observable link with 分析" analyses the Observable report alone).
+  An admin working for several servers in one chat should set `pair_window_minutes` to 0 or use one message.
+- Default ack text and the config default still say "Spark报告" (user-editable); `OBS_TABS` and the id charset remain guesses (§21.1).
+
+**Reviewer's design suggestions kept for the maintainer:** ask before merging across messages instead of attaching silently;
+partial-result policy extended to the Spark side; key pairing on `server=` tags; keep an Observable id hash in history for
+`compare`; one real-worker end-to-end test of the merged flow; trim this file and pin test counts in docs with a test.
+
+## 23. Fixes from the independent review report (B1, B3, S1, S6)
+
+Source: `report_01Wcb9buwKLy6cYGYqV8BvCj.md` (Chinese; on branch `ccr-422bc249-ju8f1e` only, not in the `v1.0.8` release). The maintainer asked for these four items, in
+priority order, with tests. Branch `ccr-422bc249-ju8f1e`. Other report items are unchanged.
+
+| Item | Change | Test (fails with the fix reverted) |
+|---|---|---|
+| B1 | `handle()`: when this message's Observable report failed (`missing`), skip the `recent_companion` lookup, so an earlier Observable report cannot stand in for it. `pairing` is now initialised with `companion`. | `test_failed_observable_is_not_replaced_by_an_earlier_one` (also checks a later Spark-only message still pairs) |
+| B3 | `transport._get`: always sends `Accept-Encoding: gzip`. aiohttp's default offers `br`/`zstd` when Brotli/zstd are importable, and only gzip is decoded (`auto_decompress=False`). The `gzip_only` flag, now only used for the expired-report hint, is renamed `observable`. | `test_only_gzip_is_requested` |
+| S1 | `output.bound_reply()` on the model text before the footnotes: URLs (`https?://` or `www.`) whose host is not `spark.lucko.me`/`observable.tas.sh` lose the scheme and get `[.]` in the host, plus one note line; then the text is cut at `MAX_REPLY_CHARS = 3000`. Unparseable hosts count as untrusted. Footnotes are appended after the cut. History still stores the raw result (capped at 24000 as before). | `test_output` (3 new), `test_reply_is_capped_and_untrusted_links_defanged` |
+| S6 | `Profile.query`: `offset <= min(nodes, MAX_QUERY_OFFSET=1000)`; `next_offset` is `None` past the cap; `thread`/`node`/`offset` reject `bool`. The tool schema reads the same constant. | `test_query_offset_is_capped_below_the_node_count`, `test_query_ids_reject_bool` |
+
+Mutation check in a scratch copy (each fix reverted alone, the listed tests run): B1, B3, S1 cap, S1 links, S1 wiring in
+`main.py`, S6 cap, S6 bool: all killed. Full suite: 203 tests OK (Python 3.13, aiohttp 3.14.5, protobuf 6.33.6).
+
+Limits of S1: a bare domain without `www.` or a scheme (`evil.example`) is not detected; the 3000-character cap is a
+constant, not a config item. Not verified on a live chat platform.
+
+## 24. Review report follow-up: S2 short queue, B4 memory cap
+
+Requested by the maintainer: S2 as a short queue only (no cooldown, no per-user quota for now), fix B4, then add tests.
+
+**S2: short queue (`main.py`).** Analyses still run one at a time on `self.gate` (`asyncio.Semaphore(1)`, which wakes
+waiters in arrival order on Python 3.12+, the AstrBot minimum). What changed:
+- `refusal()` no longer refuses because the gate is held. It refuses when the sender (`owner`) already has a request
+  running or queued ("你的上一份报告还在分析或排队…"), or when `self.waiting >= QUEUE_LIMIT` (3).
+- `handle()` reserves the place before any `await`/`yield`: `ahead = self.waiting + self.gate.locked()`, then
+  `self.waiting += 1`, so two requests cannot both take the last place. A request with `ahead > 0` gets one notice
+  ("前面还有 N 份"), then waits on the gate; on acquiring it `waiting` is decremented. `finally` gives the place back
+  when the request was cancelled or failed while still waiting (`queued` flag).
+- Queued requests are in `self.tasks`, so `terminate()` cancels them as before. Duplicate-report and access checks are
+  unchanged and still come first.
+- There is no wait timeout: a queued request can wait for up to three full analyses ahead of it.
+
+**B4: worker memory cap (`spark_core/worker.py`, `session.py`).** `cap_memory(resource)` sets `RLIMIT_AS` to the
+smallest of 1.5 GiB and the finite inherited soft/hard limits, for both soft and hard, so it never tries to raise
+the hard limit (the K2 failure). `ValueError`/`OSError` from `getrlimit`/`setrlimit` return `unavailable: <type>`
+and parsing continues without a cap (handoff §20 option (a)). The result goes into `ready.json` as
+`_worker_memory_limit` (both the success and the error payload). `ReportSession.parse()` pops it before the
+overview is used, logs it on the `parse ready` line, and warns when the cap is unavailable.
+
+| Change | Tests |
+|---|---|
+| S2 queue | `test_requests_wait_in_order_while_another_analysis_runs`, `test_full_queue_and_second_request_of_one_sender_are_refused`, `test_cancelled_waiter_gives_its_place_back`, `test_tool_request_is_queued_with_a_notice` (each wait bounded by 10 s, so a queue bug fails instead of hanging) |
+| B4 cap | `tests/test_worker_memory.py`: `cap_memory` with a fake `resource` (no limit, lower inherited soft/hard, higher inherited, refused call); real worker on Linux with no limit (`/proc/<pid>/limits` shows 1.5 GiB) and under the K2 reproduction limit `1200000*1024` (parses, keeps that limit); host pops and logs the status, warns when unavailable, still raises the worker's error |
+
+Mutation check in a scratch copy (each change reverted alone, the tests above run): old busy refusal, no queue
+limit, no queue notice, no place returned on cancel, no dequeue on acquire, old fixed 1.5 GiB cap, no exception
+catch, status not popped, no warning: all 9 killed, none hangs. Full suite:
+216 tests OK. Not verified on macOS or on a live chat platform.
+
+## 25. Release prep for 1.0.8
+
+The maintainer asked for a branch `v1.0.8` with the minimum needed content. Built the same way as `v1.0.7` (§19);
+no PR was created.
+
+- **Base:** `origin/main` at `2ec768e` (PR #5, 1.0.7).
+- **Content:** a single commit whose tree is the tip of `ccr-422bc249-ju8f1e` (Observable support §21-§22, review
+  fixes §23-§24) without the review report `report_01Wcb9buwKLy6cYGYqV8BvCj.md`, which stays on the work branch.
+  The CHANGELOG fix heading no longer names that file.
+- **Version:** `metadata.yaml` `v1.0.8`, the `@register(...)` literal `1.0.8`, `## Unreleased` ->
+  `## 1.0.8 - 2026-10-13`; `test_version_is_consistent` checks all three. `checklist.md` "当前状态", the package
+  name and the unreleased section follow; README/checklist "fixed in Unreleased" now say 1.0.8.
+- **Not changed:** the AI statements in the README and CHANGELOG headers (they still name 1.0.3 to 1.0.7); the
+  maintainer decides their wording.
+- **Not tested live:** 1.0.8 has not been run on a chat platform; 216 automated tests pass.
+

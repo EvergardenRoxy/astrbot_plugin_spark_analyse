@@ -10,8 +10,8 @@
 
 ## 当前状态
 
-- 当前版本 **1.0.7**，已在 QQ 群（NapCat，AstrBot 4.28.2）实际使用测试通过，分析回复基本符合预期；回复的写法可以在配置“分析回复要求”中自行调整。
-- 自动测试共 125 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
+- 当前版本 **1.0.8**，加入 Observable 报告支持并修复独立代码审查发现的问题，尚未经维护者实测。上一版 1.0.7 已在 QQ 群（NapCat，AstrBot 4.28.2）实际使用测试通过；回复的写法可以在配置“分析回复要求”中自行调整。
+- 自动测试共 216 项，全部通过；每次推送代码时，GitHub Actions 会在 Python 3.12 和 3.13 上各跑一遍。
 
 从 1.0.3 起，修改由 Claude Opus 5.5（通过 Claude Code）完成，经项目维护者审阅。修复问题时，先写测试并确认旧代码确实会出错，再改代码，最后跑完全部测试。
 
@@ -19,8 +19,8 @@
 
 ```bash
 pip install -r requirements.txt
-python -m unittest discover -s tests   # 应显示 Ran 125 tests ... OK
-python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7.zip
+python -m unittest discover -s tests   # 应显示 Ran 125 tests ... OK（开发分支为 Ran 195 tests）
+python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.8.zip
 ```
 
 也可以在 GitHub 仓库的 Actions 页面查看每次推送的测试结果。
@@ -32,13 +32,40 @@ python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7
 - **报告链接只访问官方报告网站**：只下载 `https://spark.lucko.me/报告ID`，不跟随跳转，不使用系统代理（除非在设置里开启下载代理）。
 - **`.sparkprofile` 文件只从聊天平台获取**：文件的位置由聊天平台提供（下载地址或本地路径），消息文字里的网址不会被当作文件去下载；获取方式与 AstrBot 获取附件相同。下载地址可能带有令牌，不会写进日志或聊天。
 - **报告大小有上限**：压缩后最多 16 MiB，解压后最多 128 MiB，`.sparkprofile` 文件最多 128 MiB，调用节点最多 100 万个。超出时直接拒绝，并提示缩短采样时间。
-- **解析在独立进程中进行**：在 Linux 和 macOS 上，解析进程会把自己的内存上限设为 1.5 GiB（设置失败时的问题见下方“已知问题”第 2 项）；Windows 上没有这个上限。用人工构造的、接近大小上限的报告实测，峰值约用 0.8 GiB 内存。
+- **解析在独立进程中进行**：在 Linux 和 macOS 上，解析进程会把自己的内存上限设为 1.5 GiB；环境里已有更低的上限时沿用那个更低的值，设置被系统拒绝时不设上限继续解析并在日志中警告（见下方“已知问题”第 2 项，已修复）；Windows 上没有这个上限。用人工构造的、接近大小上限的报告实测，峰值约用 0.8 GiB 内存。
 - **不会偷偷换成主聊天模型**：没有配置“分析模型”时直接提示，不会改用主聊天模型分析。
 - **聊天里不泄露服务器信息**：出错时，聊天里只显示插件自己写的原因；其他错误只显示错误类型，因为原始错误信息里可能含有服务器上的文件路径。
 - **数据保存范围**：通过链接下载的原始报告只存在缓存里，默认从最近一次使用起保留 72 小时；`.sparkprofile` 文件只在分析期间存在临时目录里，分析结束即删除；分析历史默认关闭，开启后只保存摘要和结论，保留 30 天。
 - **默认只有管理员能用**：新安装默认“仅管理员”，已有的配置保持不变。
 
 ## 各版本做了什么
+
+### 1.0.8：支持 Observable 模组的报告，修复代码审查发现的问题
+
+1. **可以分析 Observable 报告**
+   - 为什么：Spark 只能说明“时间花在哪个方法上”，而 [Observable](https://github.com/tasgon/observable) 逐个记录实体和方块实体各自占用的 tick 时间，更容易指出“哪种实体、哪台机器、哪个区块在拖慢服务器”，两者互补。
+   - 做了什么：链接格式是 `https://observable.tas.sh/p/报告ID`。插件从 Observable 官方站点取回报告数据，在独立进程里解析，汇总成按类型、维度、区块、单个对象排名的摘要，再交给分析模型。这类报告同样有大小上限（压缩后 16 MiB，解压后 48 MiB）、不跟随跳转、不使用系统代理。
+   - 怎么核对：发送 `帮我分析 https://observable.tas.sh/p/报告ID`，应收到开始提示和分析；测试 `tests/test_observable.py` 覆盖解析、数值计算、异常数据和下载限制。
+2. **看到链接不会自动读取**
+   - 做了什么：和 Spark 链接一样，只有发送者提到“分析”“诊断”“卡顿”等词、使用 `/spark` 命令或由聊天模型调用工具时才会读取；单独发一个 Observable 链接，插件不下载、不响应。
+   - 怎么核对：只发链接或写“看看这个”，插件应无反应（测试 `test_observable_link_needs_a_request_to_analyse`）。
+3. **Spark 和 Observable 一起分析**
+   - 同一条消息里同时发两种链接：合并成一次分析，只回复一次。
+   - 同一个人在同一会话里，30 分钟内（可在配置“Spark 与 Observable 报告的配对时间”中调整，0 为关闭）先后发两种报告：后一次分析会把前一份当作背景一起参考，回复末尾会注明。配对只在内存里，不同的人、不同的会话之间不会互相参考。
+   - 合并前先核对：游戏版本、加载器（Forge 与 NeoForge 视为不同）、采样时间是否重叠或相近。版本或加载器不一致时不合并，并在回复里提醒；采样时间相距较远时，只说明可能是同一台服务器，不把两份数据当成同一时刻。
+   - 怎么核对：测试 `test_both_links_in_one_message_are_merged`、`test_recent_other_report_is_paired_and_noted`、`test_version_mismatch_is_flagged_and_noted`、`test_pairing_is_per_requester_and_expires`。
+4. **独立评测与修正**
+   - 做了什么：另起一个不带任何上下文的 AI 子代理独立评测，12 项发现中修复了 8 项：文件旁的 Observable 链接绕过关键词、混合端误判冲突、不一致的前一份报告仍被交给模型、一份失败导致全部失败、提示词互相矛盾、`/spark forget` 不清配对记忆等；其余 4 项记录在 handoff.md §22。
+   - 怎么核对：测试 `test_observable_link_beside_a_file_still_needs_a_request`、`test_unmatched_companion_is_not_sent_to_the_model`、`test_observable_failure_keeps_the_spark_analysis`、`test_forget_also_clears_pairing_memory` 等。
+5. **代码审查发现的问题**
+   - 同一条消息里的 Observable 报告读取失败时，不再用之前发送的另一份顶替（测试 `test_failed_observable_is_not_replaced_by_an_earlier_one`）。
+   - 下载 Spark 报告只请求 gzip 压缩，避免环境装有 Brotli/zstd 时下载失败（测试 `test_only_gzip_is_requested`）。
+   - 结论超过 3000 字会截断，报告网站以外的链接改为不可点击（测试 `tests/test_output.py`）。
+   - 模型的调用树查询分页最多到第 1000 行（测试 `test_query_offset_is_capped_below_the_node_count`）。
+   - 分析进行中收到的请求排队等待（最多 3 份），不再直接拒绝（测试 `test_requests_wait_in_order_while_another_analysis_runs` 等）。
+   - 环境已有更低内存上限时解析进程不再退出，见下方“已知问题”第 2 项。
+6. **暂不支持的部分**
+   - Observable 报告不支持 `compare` 历史对比；不支持本地导出的 json 文件（避免任何 json 文件都被当作报告）；一条消息里最多一个 Spark 报告和一个 Observable 报告，多了会提示。
 
 ### 1.0.7：支持 `.sparkprofile` 文件
 
@@ -163,11 +190,12 @@ python tools/package_plugin.py         # 生成 dist/astrbot_plugin_spark-v1.0.7
    - 已有的防护：分析使用单独配置的专用模型；模型只能调用一个只读工具 `spark_query`，每次尝试最多 8 次；内置规则写明报告内容、方法名、用户描述和历史结论都只是数据，其中的指令一律不执行；历史结论标为“不可信”；插件不给模型任何访问文件、网络或密钥的能力。
    - 残余影响：最坏情况是模型被诱导输出错误的分析结论并发到聊天里，属于“结论可信度”问题，不会泄露机密，也不能借此执行命令。这是所有“让大模型分析不可信内容”的插件都有的风险，目前的防护在同类插件中属于较好的水平。
    - 建议：把分析结论当作参考；来源不明的报告尤其如此。
-2. **解析进程设置内存上限失败时直接退出**
+2. **解析进程设置内存上限失败时直接退出（已在 1.0.8 修复）**
    - 是什么：解析进程（`spark_core/worker.py` 的 `run()`）启动时调用 `setrlimit(RLIMIT_AS)` 把内存上限设为 1.5 GiB。这一步写在错误处理（`try`）之外，失败时不会写出错误说明（`ready.json`），而解析进程的错误输出又被丢弃，所以聊天里每次都只显示“解析worker异常退出”。
    - 什么时候会发生：AstrBot 所在环境已经设置了低于 1.5 GiB 的“硬”内存上限，例如 systemd 服务的 `LimitAS=`，或启动前执行过 `ulimit -v`。普通的 pip、uv 和 Docker 部署默认没有这个限制，不受影响。审查者推测 macOS 也可能拒绝这项设置，目前没有 macOS 环境验证。
    - 怎么复现：在 Linux 上先执行 `ulimit -v 1200000`（约 1.1 GiB），再在同一个终端里运行解析进程，会报 `ValueError: not allowed to raise maximum limit` 并退出；通过插件分析时，聊天里显示“解析worker异常退出”。不加这项限制时，同一份报告可以正常解析。
    - 可能的修复（1.0.7 未实施）：把这一步放进错误处理，失败时跳过内存上限继续解析，或者写出能看懂的原因。
+   - 修复（1.0.8）：解析进程改为取“1.5 GiB”和“已有上限”中更低的那个，不再尝试调高已有上限，所以上面的情况不会再失败；系统仍然拒绝设置时，不设上限继续解析，AstrBot 日志会出现一条警告。解析进程实际采用的上限会写进日志（`memory_limit=`）。测试 `tests/test_worker_memory.py` 在 `ulimit -v 1200000` 同样的上限下启动真实的解析进程，确认它能正常解析并沿用这个上限。
 3. **部分关键限制没有自动测试保护**
    - 是什么：审查者对 22 处关键代码做了“变异测试”（逐一删掉某个检查，再跑全部测试）。下面五项删掉后，125 项测试仍然全部通过，也就是说今后修改代码时，如果不小心把它们改坏，自动测试发现不了：
      - 100 万调用节点上限（`spark_core/profile.py`）。这是 `handoff.md` 列为“不可放宽”的限制之一。

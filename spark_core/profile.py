@@ -27,6 +27,14 @@ WAIT_FRAMES = frozenset({'jdk.internal.misc.Unsafe.park', 'sun.misc.Unsafe.park'
                          'java.lang.Thread.sleep0', 'java.lang.Thread.sleepNanos0', 'java.lang.Object.wait',
                          'java.lang.Object.wait0'})
 PERFORMANCE_GAME_RULES = ('randomTickSpeed', 'doMobSpawning', 'maxEntityCramming', 'spawnChunkRadius')
+# Deepest page the model may ask for. hotspots keeps offset+21 rows, so an unbounded offset would build a row for
+# every node of a million-node thread.
+MAX_QUERY_OFFSET = 1000
+
+
+def _integer(value):
+    # bool is an int subclass; True must not select thread 1.
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 class Profile:
@@ -259,7 +267,7 @@ class Profile:
                 'scope': 'all recorded windows; temporal findings require window query'}
 
     def query(self, view='hotspots', thread=0, node=-1, window=None, search='', offset=0):
-        if not isinstance(thread, int) or not 0 <= thread < len(self.data.threads):
+        if not _integer(thread) or not 0 <= thread < len(self.data.threads):
             raise ProfileError('线程ID无效')
         t = self.data.threads[thread]
         if window is not None and window not in self.windows:
@@ -268,9 +276,9 @@ class Profile:
         def value(n):
             return sum(n.times) if wi is None else n.times[wi]
         total = value(t)
-        if not isinstance(node, int) or not -1 <= node < len(t.children):
+        if not _integer(node) or not -1 <= node < len(t.children):
             raise ProfileError('节点ID无效')
-        if not isinstance(offset, int) or not 0 <= offset <= len(t.children):
+        if not _integer(offset) or not 0 <= offset <= min(len(t.children), MAX_QUERY_OFFSET):
             raise ProfileError('分页offset无效')
         def row(i):
             n = t.children[i]
@@ -308,4 +316,4 @@ class Profile:
             raise ProfileError('不支持的查询view')
         return {'fingerprint': self.fingerprint, 'thread': thread, 'window': window,
                 'unit': 'sampled_ms', 'denominator_ms': total,
-                'filter': 'none', 'rows': rows[:20], 'next_offset': offset+20 if len(rows)>20 else None}
+                'filter': 'none', 'rows': rows[:20], 'next_offset': offset+20 if len(rows)>20 and offset+20 <= MAX_QUERY_OFFSET else None}

@@ -23,8 +23,9 @@ class TransportSecurityTests(unittest.IsolatedAsyncioTestCase):
                 assert kwargs['trust_env'] is False
             async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
-            def get(self, url, **kwargs):
+            def get(this, url, **kwargs):
                 assert kwargs['allow_redirects'] is False
+                self.request = kwargs
                 assert 'ssl' not in kwargs  # aiohttp default certificate verification
                 return Response()
         with tempfile.TemporaryDirectory() as directory:
@@ -36,6 +37,11 @@ class TransportSecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_gzip_valid(self):
         raw = b'valid synthetic data'*100
         self.assertEqual(await self.fetch(gzip.compress(raw), {'Content-Type':'application/x-spark-sampler', 'Content-Encoding':'gzip'}), raw)
+
+    async def test_only_gzip_is_requested(self):
+        # aiohttp's default Accept-Encoding offers br/zstd when those libraries are installed; only gzip is decoded.
+        await self.fetch(b'x')
+        self.assertEqual(self.request['headers'], {'Accept-Encoding': 'gzip'})
 
     async def test_gzip_bomb_is_bounded(self):
         with self.assertRaisesRegex(ProfileError, '解压体积超限'):

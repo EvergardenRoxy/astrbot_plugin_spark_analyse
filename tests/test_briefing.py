@@ -146,4 +146,114 @@ class PromptTests(unittest.TestCase):
                 self.assertIn(f"'{name}'", package)
 
 
+def observable_view(**changes):
+    from test_observable import ObservableProfile, report
+    return ObservableProfile(report(**changes)).overview()
+
+
+class ObservableBriefingTests(unittest.TestCase):
+    def test_cost_classes_follow_the_tick_budget(self):
+        view = observable_view()
+        for budget, cost in ((7.1, 'light'), (19.9, 'light'), (20, 'notable'), (49.9, 'notable'), (50, 'heavy')):
+            with self.subTest(budget=budget):
+                view['totals']['tick_budget_pct'] = budget
+                self.assertEqual(briefing.observable_triage(view)['cost'], cost)
+        view['totals']['tick_budget_pct'] = None
+        self.assertEqual(briefing.observable_triage(view)['cost'], 'unknown')
+
+    def test_load_comes_from_the_tps_estimate(self):
+        view = observable_view()
+        for tps, load in ((20.0, 'none'), (19.5, 'none'), (19.4, 'mild'), (15, 'mild'), (14.9, 'sustained'), (None, 'unknown')):
+            with self.subTest(tps=tps):
+                view['runtime']['tps_estimate'] = tps
+                self.assertEqual(briefing.observable_triage(view)['load'], load)
+
+    def test_dominant_and_concentrated_types(self):
+        triage = briefing.observable_triage(observable_view())
+        self.assertEqual(triage['top_type'], 'create:contraption')
+        self.assertTrue(triage['dominant_type'])
+        self.assertTrue(triage['concentrated'])
+        self.assertIn('create:contraption', triage['summary'])
+        view = observable_view()
+        view['entity_types'] = [{'type': f'm:t{i}', 'share_pct': 10} for i in range(10)]
+        view['block_types'] = []
+        triage = briefing.observable_triage(view)
+        self.assertFalse(triage['dominant_type'])
+        self.assertFalse(triage['concentrated'])
+        self.assertIn('分散', triage['summary'])
+
+    def test_empty_ranking_does_not_crash(self):
+        view = observable_view()
+        view.update(entity_types=[], block_types=[], hot_chunks=[])
+        triage = briefing.observable_triage(view)
+        self.assertIsNone(triage['top_type'])
+        self.assertIsNone(triage['hot_chunk_share_pct'])
+
+    def test_spark_only_payload_is_unchanged_by_the_new_parameters(self):
+        payload = json.loads(briefing.user_payload('卡', overview()))
+        self.assertEqual(set(payload), {'user_observation', 'overview', 'history_comparison',
+                                        'history_comparison_unavailable', 'previous_review_untrusted'})
+
+    def test_payload_shapes_for_each_report_kind(self):
+        both = json.loads(briefing.user_payload('卡', overview(), observable=observable_view(), pairing={'how': 'same_message'}))
+        self.assertEqual(both['report_kind'], 'spark+observable')
+        self.assertEqual(next(iter(both['observable'])), 'triage')
+        only = json.loads(briefing.user_payload('卡', None, observable=observable_view()))
+        self.assertEqual(only['report_kind'], 'observable')
+        self.assertNotIn('overview', only)
+
+    def test_jvm_flags_are_summarised_unless_asked(self):
+        view = observable_view()
+        view['runtime']['jvm_flags'] = '-Xmx4G -Dfoo=secret -XX:+UseG1GC'
+        trimmed = briefing.model_observable(view, '为什么卡')['runtime']['jvm_flags']
+        self.assertEqual(trimmed['key_flags'], ['-Xmx4G', '-XX:+UseG1GC'])
+        self.assertNotIn('secret', json.dumps(trimmed))
+        self.assertIn('secret', briefing.model_observable(view, 'JVM参数有问题吗')['runtime']['jvm_flags'])
+        self.assertEqual(view['runtime']['jvm_flags'], '-Xmx4G -Dfoo=secret -XX:+UseG1GC')  # input is not modified
+
+
+class CorrelationTests(unittest.TestCase):
+    NOW = 1_760_000_000_000
+
+    def pair(self, spark_start=None, spark_end=None, **spark):
+        s = overview()
+        s['platform'].update({'name': 'NeoForge', 'minecraft': '1.21.1', **spark})
+        s['sampling'].update(start_ms=spark_start, end_ms=spark_end)
+        return briefing.correlate(s, observable_view())  # Observable window: NOW .. NOW+10 s
+
+    def test_overlapping_windows(self):
+        result = self.pair(self.NOW-60_000, self.NOW+5_000)
+        self.assertEqual((result['verdict'], result['sampling_windows_overlap'], result['sampling_gap_seconds']), ('overlapping', True, 0))
+        self.assertEqual((result['minecraft'], result['mod_loader']), ('same', 'same'))
+
+    def test_near_and_apart_use_the_pairing_distance(self):
+        end = self.NOW-briefing.PAIR_NEAR_SECONDS*1000
+        self.assertEqual(self.pair(end-60_000, end)['verdict'], 'near')
+        self.assertEqual(self.pair(end-120_000, end-1_000)['verdict'], 'apart')
+
+    def test_unknown_times(self):
+        self.assertEqual(self.pair()['verdict'], 'time_unknown')
+
+    def test_different_version_or_loader_conflicts(self):
+        self.assertEqual(self.pair(self.NOW, self.NOW+1000, minecraft='1.20.1')['verdict'], 'conflict')
+        result = self.pair(self.NOW, self.NOW+1000, name='Fabric')
+        self.assertEqual((result['verdict'], result['mod_loader']), ('conflict', 'different'))
+        # Forge is not NeoForge.
+        self.assertEqual(self.pair(self.NOW, self.NOW+1000, name='Forge')['verdict'], 'conflict')
+
+    def test_hybrid_servers_reporting_as_bukkit_are_not_called_conflicting(self):
+        for brand in ('Arclight', 'Mohist', 'Paper'):
+            result = self.pair(self.NOW, self.NOW+1000, name='Bukkit', brand=brand)
+            self.assertEqual((result['mod_loader'], result['verdict']), ('unknown', 'overlapping'))
+
+    def test_missing_fields_are_unknown_not_conflicting(self):
+        result = self.pair(self.NOW, self.NOW+1000, minecraft='', name='', brand='')
+        self.assertEqual((result['minecraft'], result['mod_loader'], result['verdict']), ('unknown', 'unknown', 'overlapping'))
+
+    def test_cost_ratio_is_given_only_without_conflict(self):
+        ok = self.pair(self.NOW, self.NOW+1000)
+        self.assertEqual(ok['observed_ms_vs_spark_mspt_median_pct'], round(100*3.55/11.6, 1))
+        self.assertNotIn('observed_ms_vs_spark_mspt_median_pct', self.pair(self.NOW, self.NOW+1000, minecraft='1.20.1'))
+
+
 if __name__ == '__main__': unittest.main()
