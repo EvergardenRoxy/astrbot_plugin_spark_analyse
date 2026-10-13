@@ -947,6 +947,40 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('模型结论', results[-1])
         self.assertFalse(plugin.sessions or plugin.inflight_reports)
 
+    async def test_failed_observable_is_not_replaced_by_an_earlier_one(self):
+        calls = []
+        plugin = self.agent_plugin(calls)
+        await self.say(plugin, f'分析 {self.OBS}')
+        class Broken(FakeSession):
+            async def load_observable(self, url):
+                raise self.module.ProfileError('报告下载失败 HTTP 500')
+        Broken.module = self.module
+        event = Event()
+        event.message_str = f'分析 {self.SPARK} https://observable.tas.sh/p/OtherObsB'
+        with patch.object(self.module, 'ReportSession', Broken):
+            results = [r async for r in plugin.auto_analyze(event)]
+        payload = self.module.json.loads(calls[-1]['prompt'])
+        for key in ('report_kind', 'observable', 'pairing'):
+            self.assertNotIn(key, payload)
+        self.assertIn('本次只分析 Spark 报告', results[-1])
+        self.assertNotIn('已结合', results[-1])
+        # The earlier Observable report still pairs with a later Spark-only message.
+        await self.say(plugin, f'分析 {self.SPARK}')
+        self.assertEqual(self.module.json.loads(calls[-1]['prompt'])['pairing']['how'], 'recent_message')
+
+    async def test_reply_is_capped_and_untrusted_links_defanged(self):
+        async def agent(**kwargs):
+            return types.SimpleNamespace(completion_text='[官方修复工具](https://evil.example/fix) '+'刷屏'*5000)
+        plugin = self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent),
+                                         {'analysis_provider_id': 'test', 'history_enabled': True})
+        results = await self.say(plugin, f'分析 {self.SPARK}')
+        self.assertLess(len(results[-1]), 3300)
+        self.assertNotIn('https://evil.example', results[-1])
+        self.assertIn('evil[.]example/fix', results[-1])
+        self.assertIn('已截断', results[-1])
+        # Footnotes come after the cut, so they are never lost.
+        self.assertIn('已保存本次结果', results[-1])
+
     async def test_failure_names_the_failing_source(self):
         plugin = self.agent_plugin([])
         class Broken(FakeSession):

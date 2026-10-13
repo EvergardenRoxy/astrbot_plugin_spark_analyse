@@ -1252,3 +1252,21 @@ forget, LRU, the schema/code default of `pair_window_minutes`.
 **Reviewer's design suggestions kept for the maintainer:** ask before merging across messages instead of attaching silently;
 partial-result policy extended to the Spark side; key pairing on `server=` tags; keep an Observable id hash in history for
 `compare`; one real-worker end-to-end test of the merged flow; trim this file and pin test counts in docs with a test.
+
+## 23. Fixes from the independent review report (B1, B3, S1, S6)
+
+Source: `report_01Wcb9buwKLy6cYGYqV8BvCj.md` (Chinese, repository root). The maintainer asked for these four items, in
+priority order, with tests. Branch `ccr-422bc249-ju8f1e`. Other report items are unchanged.
+
+| Item | Change | Test (fails with the fix reverted) |
+|---|---|---|
+| B1 | `handle()`: when this message's Observable report failed (`missing`), skip the `recent_companion` lookup, so an earlier Observable report cannot stand in for it. `pairing` is now initialised with `companion`. | `test_failed_observable_is_not_replaced_by_an_earlier_one` (also checks a later Spark-only message still pairs) |
+| B3 | `transport._get`: always sends `Accept-Encoding: gzip`. aiohttp's default offers `br`/`zstd` when Brotli/zstd are importable, and only gzip is decoded (`auto_decompress=False`). The `gzip_only` flag, now only used for the expired-report hint, is renamed `observable`. | `test_only_gzip_is_requested` |
+| S1 | `output.bound_reply()` on the model text before the footnotes: URLs (`https?://` or `www.`) whose host is not `spark.lucko.me`/`observable.tas.sh` lose the scheme and get `[.]` in the host, plus one note line; then the text is cut at `MAX_REPLY_CHARS = 3000`. Unparseable hosts count as untrusted. Footnotes are appended after the cut. History still stores the raw result (capped at 24000 as before). | `test_output` (3 new), `test_reply_is_capped_and_untrusted_links_defanged` |
+| S6 | `Profile.query`: `offset <= min(nodes, MAX_QUERY_OFFSET=1000)`; `next_offset` is `None` past the cap; `thread`/`node`/`offset` reject `bool`. The tool schema reads the same constant. | `test_query_offset_is_capped_below_the_node_count`, `test_query_ids_reject_bool` |
+
+Mutation check in a scratch copy (each fix reverted alone, the listed tests run): B1, B3, S1 cap, S1 links, S1 wiring in
+`main.py`, S6 cap, S6 bool: all killed. Full suite: 203 tests OK (Python 3.13, aiohttp 3.14.5, protobuf 6.33.6).
+
+Limits of S1: a bare domain without `www.` or a scheme (`evil.example`) is not detected; the 3000-character cap is a
+constant, not a config item. Not verified on a live chat platform.

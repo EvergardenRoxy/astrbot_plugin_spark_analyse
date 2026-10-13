@@ -54,7 +54,7 @@ async def download(url, path, compressed_limit=16*1024*1024, decoded_limit=128*1
 async def _download(url, path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy=None):
     key = report_id(url)
     await _get(f'https://spark-usercontent.lucko.me/{key}', path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy,
-               content_type=('application/x-spark-sampler',), type_error='报告类型不是sampler', gzip_only=False,
+               content_type=('application/x-spark-sampler',), type_error='报告类型不是sampler', observable=False,
                too_big=SPARK_DECODED_TOO_BIG)
 
 
@@ -80,7 +80,7 @@ async def download_observable(url, path, compressed_limit=16*1024*1024, decoded_
     key = observable_id(url)
     try:
         await _get(f'https://observable.tas.sh/v1/get/{key}', path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy,
-                   content_type=('application/json', 'text/plain'), type_error='报告类型不是Observable数据', gzip_only=True,
+                   content_type=('application/json', 'text/plain'), type_error='报告类型不是Observable数据', observable=True,
                    too_big=OBS_DECODED_TOO_BIG)
     except TimeoutError as exc:
         elapsed = time.monotonic()-stats['started']
@@ -89,15 +89,16 @@ async def download_observable(url, path, compressed_limit=16*1024*1024, decoded_
         raise TimeoutError(detail) from exc
 
 
-async def _get(url, path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy, *, content_type, type_error, gzip_only, too_big):
+async def _get(url, path, compressed_limit, decoded_limit, timeout_seconds, stats, proxy, *, content_type, type_error, observable, too_big):
     timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=min(30, timeout_seconds))
-    # Observable's site is behind a CDN that may compress; ask only for gzip, which is the one coding we decode.
-    headers = {'Accept-Encoding': 'gzip'} if gzip_only else None
+    # Ask only for gzip, the one coding decoded here. aiohttp's default header also offers br and zstd when those
+    # libraries are installed, and a server or CDN that picks one would fail the download.
+    headers = {'Accept-Encoding': 'gzip'}
     async with aiohttp.ClientSession(timeout=timeout, auto_decompress=False, trust_env=False) as session:
-        async with session.get(url, allow_redirects=False, proxy=proxy, **({'headers': headers} if headers else {})) as response:
+        async with session.get(url, allow_redirects=False, proxy=proxy, headers=headers) as response:
             if response.status != 200:
                 # Observable answers an unknown or expired id with a 500 rather than a 404.
-                gone = '，Observable 报告可能不存在或已过期，请确认链接' if gzip_only and response.status in (404, 500) else ''
+                gone = '，Observable 报告可能不存在或已过期，请确认链接' if observable and response.status in (404, 500) else ''
                 raise ProfileError(f'报告下载失败 HTTP {response.status}{gone}')
             if response.headers.get('Content-Type', '').split(';')[0].strip().lower() not in content_type:
                 raise ProfileError(type_error)

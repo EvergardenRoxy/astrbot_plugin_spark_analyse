@@ -14,10 +14,10 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from .spark_core.session import ReportSession, LoadTimeout
-from .spark_core.profile import ProfileError
+from .spark_core.profile import MAX_QUERY_OFFSET, ProfileError
 from .spark_core.history import History, compare
 from .spark_core.transport import LINK, OBS_LINK, is_report_file
-from .spark_core.output import plain_text
+from .spark_core.output import bound_reply, plain_text
 from .spark_core.cache import ProfileCache
 from .spark_core.tasks import cancel_bounded
 from .spark_core.briefing import correlate, is_legacy_reply, reply_requirements, system_prompt, user_payload
@@ -239,12 +239,12 @@ class SparkPlugin(Star):
                 if obs_source:
                     self.remember(owner, 'observable', observable)
                 # Both kinds in this request, or the other kind sent recently by the same requester.
-                companion = None
+                companion = pairing = None
                 if spark_source and obs_source:
                     pairing = {'how': 'same_message'}
-                else:
+                elif not missing:
+                    # missing: this message's own Observable report failed. An earlier one must not stand in for it.
                     companion = self.recent_companion('observable' if spark_source else 'spark', owner)
-                    pairing = None
                     if companion:
                         minutes, earlier = companion
                         if spark_source:
@@ -285,7 +285,7 @@ class SparkPlugin(Star):
                     yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(error).__name__}），使用下一个模型继续尝试。')
                 history_id = await self.save_history(owner, tags, overview, result, trace) if spark_source else None
                 logger.info('Spark [%s] history saved=%s; sending final result', trace, history_id or False)
-                yield event.plain_result(plain_text(result)+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing, missing))
+                yield event.plain_result(bound_reply(plain_text(result))+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing, missing))
                 logger.info('Spark [%s] result delivered', trace)
         except asyncio.CancelledError:
             raise
@@ -461,7 +461,7 @@ class SparkPlugin(Star):
                 'node':{'type':'integer','description':'节点 ID，取自之前的结果；children 时 -1 表示线程根'},
                 'window':{'type':'integer','description':'时间窗口 ID，取自 overview.windows；不填表示全部窗口'},
                 'search':{'type':'string','maxLength':120,'description':'view=search 时要查找的方法名片段（字面匹配）'},
-                'offset':{'type':'integer','minimum':0,'maximum':1000,'description':'分页起点，取上一页的 next_offset'}},
+                'offset':{'type':'integer','minimum':0,'maximum':MAX_QUERY_OFFSET,'description':'分页起点，取上一页的 next_offset'}},
                 'required':['view','thread']}, handler=query)
 
     async def ask(self, event, provider_id, prompt, instructions, session, owner, trace):
