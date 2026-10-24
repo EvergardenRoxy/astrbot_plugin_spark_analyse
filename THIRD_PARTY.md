@@ -10,7 +10,8 @@ Plugin and core source are distributed under GPL-3.0-or-later. aiohttp and proto
 Copyright 2010-2012 Google Corporation, distributed under SIL Open Font License 1.1. Source:
 https://github.com/notofonts/noto-cjk (Debian `fonts-noto-cjk` installed font collection, SC face).
 The modified family/PostScript name is Spark Chart Sans / SparkChartSans-Regular. Latin, CJK ideographs,
-punctuation and full-width symbols were subset with fontTools; original glyph outlines were not edited.
+punctuation and full-width symbols were subset with fontTools (rebuild script: `tools/subset_chart_font.py`, GB2312 hanzi,
+kana, Latin/Greek/Cyrillic and every renderer label kept); original glyph outlines were not edited.
 Full license and attribution are in `spark_core/chart_assets/OFL.txt`. This font remains under OFL, not GPL.
 
 The chart Sources accounting follows the outermost-per-source inclusive algorithm and mapping priorities
