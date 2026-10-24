@@ -1352,3 +1352,55 @@ Not verified live in AstrBot/Minecraft or with a real model. No new release/vers
 remains a default-tick-rate estimate; the policy explicitly prevents applying that label as proof on a paired Spark
 report with another target. Automatic deobfuscation and full metrics timelines remain outside this change.
 
+## 27. Once-per-chat quad charts (branch 1025, Unreleased)
+
+User authorized implementation on a new branch `1025`, commit identity `EvergardenRoxy <fubukisanta@163.com>`,
+and explicitly requested no PR. Base: main at `08783a1`. User decisions: setting-only, default off, no separate
+chart command; a report is charted once per chat, shared across senders and remembered across restarts.
+If GC event telemetry is unavailable, panel 03 is main-thread mod/plugin Sources Top 7. Existing text entries,
+access rules, queue limits and report download limits remain in place. No release version bump.
+
+Implementation overview and detailed limits: `docs/quadcharts.md`.
+
+- `telemetry.py`: lazy numeric export from the original worker-held SamplerData. Metrics delta decoding and
+  per-field anchored-window fallback, bounded/extrema-preserving series with explicit gaps, memory/Ping snapshots,
+  raw GC groups, and viewer-compatible per-source outermost inclusive aggregation. No full telemetry in model
+  payloads, history or pairing memory. Sources are not CPU shares or disjoint fractions.
+- `worker.py` / `session.py`: fixed private `telemetry_export` operation with atomic file output and a 2 MiB cap;
+  the model's query tool cannot access it. Copy to an independent chart directory before closing the parser.
+- `chart_render.py` / `chart_worker.py`: offline Matplotlib Agg renderer, 2400x1500 PNG, bundled modified OFL CJK
+  font. No TeX/mathtext. Explicit ordinary numeric log formatting avoids literal mathtext tick labels. An inherited
+  or 1.5 GiB address-space cap applies where supported; if setting it fails, charts fail separately from text.
+  Windows has no equivalent cap. The host supervises a 30 s deadline and checks the switch every 0.2 s.
+- `charts.py`: SQLite once-per-chat claims keyed by hash(unified_msg_origin) + profile fingerprint; token-safe
+  release, successful-send acknowledgement, startup recovery only for unfinished claims, fail-closed DB errors.
+  No expiry of sent records on cache/history cleanup. Claim/spawn/ack cancellation paths are supervised. A send
+  that succeeds just before a crash and before the DB commit may repeat after restart; no cross-service atomic
+  exactly-once guarantee is claimed. In-process successful-send fallback and explicit warning on ack failure.
+- `main.py`: same shared gate for chart work, chart delivery in the inner finally after model queries finish,
+  including model failure if the report loaded. Cancellation/GeneratorExit do not trigger new charts. Disabled
+  mode does not export, claim or render. Tool path still does not stop the main event. Only the current request's
+  actual Spark session may chart; a remembered companion never triggers an old chart.
+- Image delivery awaits the SDK local image send; only PNG is retained for up to 10 minutes for adapters with
+  delayed file reads. Numeric export and font caches are removed immediately. Termination/reload removes outbox
+  leftovers; crash leftovers are cleaned at initialization. No user reports or sample outputs are packaged.
+
+Leaf compatibility: the supplied execution/Java sample has one node/window where child totals exceed its parent
+by 4 ms (one sample), while all full-period node totals and the root are consistent. Profile now admits only a
+global error sum <= min(Java interval in ms, 10), after validating full-period totals, finite/nonnegative values
+and the existing graph constraints. Bad window IDs are recorded and all quantitative call-tree queries for those
+windows are rejected; window health remains queryable. Async, larger/cumulative excess and aggregate invalidity
+remain rejected. The model policy explicitly limits conclusions from these windows. This is a bounded capability
+degradation, not an assertion about the sampler's underlying error mechanism.
+
+Validation: 267 tests on local Python 3.12 (236 prior + 31 chart/regression tests), including real export/render
+subprocesses with the packaged font and PYTHONSAFEPATH, original command/auto/tool entries, QQ-style file entry,
+cross-user/chat/restart dedupe, failures/cancellation and renderer reaping, data/size caps and source accounting.
+ZIP generation/CRC checks and asset/license membership pass (32 entries, approximately 11.16 MB). No source
+report, ledger or generated image is included. Both supplied real attachments pass full load/export/render/send
+stub checks: NeoForge 1.21.1 about 5.56 s, Leaf 26.2 about 4.19 s on this worker. Numbers are smoke timings only.
+
+AstrBot 4.16.0 wheel was inspected read-only for image_result/send signatures. No actual QQ/NapCat or live
+AstrBot deployment was run; adapter-specific delivery remains a manual check. Python 3.13 is covered by the
+existing CI matrix, not by a claimed local run. No GC log/JFR import or live probe implementation in this scope.
+

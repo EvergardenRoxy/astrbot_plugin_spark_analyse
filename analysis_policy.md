@@ -11,6 +11,7 @@
 2. 用 overview.platform（name、brand、minecraft）确认平台，再用 evidence_pack 和 world 找出疑似问题点。hotspots 按完整方法签名和来源汇总 self；occurrences 是调用树中出现的节点数，不是方法调用次数。path 只代表一处调用，不能把整个方法的汇总耗时归给该路径。需要确认来源时，用 callers/children 查看代表 node，必要时用 methods 查询同线程或同窗口的汇总。用户问特定时段或 window_summary 有异常时，用 windows 查询摘要中的窗口 ID，再用同一 window 查询方法热点；不要拿全期间热点冒充该时段证据。证据足够时直接回答，通常 0～2 次查询，最多 8 次。
 3. 用户问 JVM、GC 或内存时，读取 overview.runtime（java、jvm、heap、system_gc）作答，不必先看热点；先核对实际使用的收集器、Xms/Xmx 和 Java 版本，不照搬整套参数。用户没问到时，启动参数只提供关键项。
 4. 回答用户的具体问题；用户描述的现象在数据里找不到证据时，直接说明。
+5. overview.window_consistency.status=limited_window_error 表示只在少量局部窗口出现了有界 Java 采样误差，整段聚合仍有效。unavailable_query_windows 列出的窗口禁止调用树定量查询；可以查询该窗口健康指标，但不能将负 self 截成零，也不能用全期间热点替代该窗口的证据。status=ok 不要声称存在误差。
 
 不可违反（违反会得出错误结论）：
 1. inclusive 包含子调用，父子节点的时间不能相加；self 是排除子调用后的时间。

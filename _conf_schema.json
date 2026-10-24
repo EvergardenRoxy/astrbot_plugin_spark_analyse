@@ -61,6 +61,18 @@
     "default": true,
     "hint": "开启后，有权限的人在聊天中发送 Spark 或 Observable 报告链接，并提到“分析”“诊断”“排查”“卡顿”“掉TPS”等词时，自动开始分析，不需要 @ 机器人；发送 .sparkprofile 文件时直接开始分析。关闭后可以用 /spark 命令（文件须与命令在同一条消息中，不读取引用消息里的文件），或让聊天模型调用 spark_analyze 工具。QQ 发送文件时不能附文字，要分析 QQ 里的文件必须开启本项。"
   },
+  "chart_enabled": {
+    "type": "bool",
+    "description": "首次分析附带四联图",
+    "default": false,
+    "hint": "开启后，同一聊天内同一 Spark 报告仅首次成功发送四联图，换用户或重启不会重复；按报告内容识别。关闭时所有入口均不渲染、不发图。无 GC 事件时图 03 显示主线程模组或插件来源前 7 名；内存/延迟无时间序列时显示快照。图表失败可重试，不影响文字分析。"
+  },
+  "chart_timezone": {
+    "type": "string",
+    "description": "图表时区",
+    "default": "UTC",
+    "hint": "IANA 时区，例如 Asia/Shanghai、Asia/Seoul、UTC。无效值回退 UTC。改变时区不重置同聊天同报告的一次出图记录。"
+  },
   "pair_window_minutes": {
     "type": "int",
     "description": "Spark 与 Observable 报告的配对时间（分钟）",
