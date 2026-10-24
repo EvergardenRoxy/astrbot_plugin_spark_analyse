@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -214,6 +215,26 @@ class LedgerTests(unittest.TestCase):
             l=DeliveryLedger(Path(root)/'ledger.db');l.claim('chat','pending');l.recover()
             self.assertTrue(l.claim('chat','pending'))
 
+    def test_sent_rows_expire_after_retention_and_unsent_rows_do_not_count(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'ledger.db';l=DeliveryLedger(path,retention_days=30)
+            l.complete('chat','old',l.claim('chat','old'))
+            with patch('spark_core.charts.time.time',return_value=time.time()+29*86400):
+                self.assertIsNone(l.claim('chat','old'))
+            with patch('spark_core.charts.time.time',return_value=time.time()+31*86400):
+                self.assertTrue(l.claim('chat','old'))
+                self.assertNotIn(('chat','old'),l.sent)
+            restarted=DeliveryLedger(path,retention_days=0);restarted.recover()
+            self.assertEqual(sqlite3.connect(path).execute('SELECT COUNT(*) FROM chart_delivery WHERE sent=1').fetchone()[0],0)
+
+    def test_ledger_without_timestamp_column_is_migrated_and_keeps_sent_rows(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'ledger.db';db=sqlite3.connect(path)
+            db.execute('CREATE TABLE chart_delivery (chat TEXT, fingerprint TEXT, token TEXT, sent INTEGER NOT NULL, PRIMARY KEY(chat,fingerprint))')
+            db.execute("INSERT INTO chart_delivery VALUES ('chat','old','t',1)");db.commit();db.close()
+            l=DeliveryLedger(path);l.recover()
+            self.assertIsNone(l.claim('chat','old'))
+
 
 class SendEvent:
     unified_msg_origin='platform:group:test'
@@ -410,16 +431,15 @@ class ChartEntryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(sum(isinstance(x,tuple) and x[0]=='image' for x in e2.sent),0)
         finally:await plugin.terminate()
 
-    async def test_model_failure_still_delivers_requested_chart(self):
+    async def test_model_failure_does_not_deliver_chart(self):
         class Session(plugin_test.FakeSession):
             async def load(self,url):self.overview=await super().load(url);return self.overview
         e=plugin_test.Event();e.send=AsyncMock()
         async def agent(**kwargs):raise RuntimeError('provider failed')
         plugin=self.module.SparkPlugin(types.SimpleNamespace(tool_loop_agent=agent),{'analysis_provider_id':'dedicated','chart_enabled':True})
-        async def chart(event,session,enabled,timezone):
-            self.assertTrue(session.overview);self.assertTrue(enabled());await event.send('chart')
-        with patch.object(self.module,'ReportSession',Session),patch.object(plugin.charts,'deliver',side_effect=chart):
+        deliver=AsyncMock()
+        with patch.object(self.module,'ReportSession',Session),patch.object(plugin.charts,'deliver',deliver):
             result=[x async for x in plugin.spark_command(e)]
-        e.send.assert_awaited_once_with('chart')
+        deliver.assert_not_awaited()
         self.assertTrue(any('未回落' in x for x in result))
         await plugin.terminate()

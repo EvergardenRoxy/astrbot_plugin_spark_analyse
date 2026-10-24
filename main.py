@@ -4,7 +4,6 @@ import json
 import re
 import shutil
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
@@ -222,98 +221,97 @@ class SparkPlugin(Star):
             async with self.gate:
                 self.waiting -= 1
                 queued = False
-                try:
-                    acknowledgement = str(self.config.get('acknowledgement_text', '已收到Spark报告，开始分析流程。')).strip()
-                    if acknowledgement:
-                        yield event.plain_result(acknowledgement[:1000])
-                    overview = observable = None
-                    if spark_source:
-                        session = self.new_session()
-                        self.sessions.add(session)
-                        logger.info('Spark [%s] download/parse start', trace)
-                        kind, source = spark_source
-                        if kind == 'link':
-                            overview = await session.load('https://spark.lucko.me/'+source)
-                        else:
-                            overview = await session.load_file(*attachment(source))
-                        logger.info('Spark [%s] download/parse success; threads=%s', trace, len(overview.get('threads', [])))
-                    if obs_source:
-                        label = 'Observable'
-                        try:
-                            observable = await self.load_observable(obs_source[1], trace)
-                        except asyncio.CancelledError:
+                acknowledgement = str(self.config.get('acknowledgement_text', '已收到Spark报告，开始分析流程。')).strip()
+                if acknowledgement:
+                    yield event.plain_result(acknowledgement[:1000])
+                overview = observable = None
+                if spark_source:
+                    session = self.new_session()
+                    self.sessions.add(session)
+                    logger.info('Spark [%s] download/parse start', trace)
+                    kind, source = spark_source
+                    if kind == 'link':
+                        overview = await session.load('https://spark.lucko.me/'+source)
+                    else:
+                        overview = await session.load_file(*attachment(source))
+                    logger.info('Spark [%s] download/parse success; threads=%s', trace, len(overview.get('threads', [])))
+                if obs_source:
+                    label = 'Observable'
+                    try:
+                        observable = await self.load_observable(obs_source[1], trace)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        if not spark_source:
                             raise
-                        except Exception as exc:
-                            if not spark_source:
-                                raise
-                            # The Spark report is already loaded: carry on with it alone and say what was left out.
-                            logger.warning('Spark [%s] observable skipped: %s', trace, type(exc).__name__)
-                            lost = str(exc) if isinstance(exc, (ProfileError, LoadTimeout)) else type(exc).__name__
-                            obs_source, observable = None, None
-                            missing = f'Observable 报告未能读取（{lost}），本次只分析 Spark 报告'
-                        label = 'Spark'
-                    if spark_source:
-                        self.remember(owner, 'spark', overview)
-                    if obs_source:
-                        self.remember(owner, 'observable', observable)
-                    # Both kinds in this request, or the other kind sent recently by the same requester.
-                    companion = pairing = None
-                    if spark_source and obs_source:
-                        pairing = {'how': 'same_message'}
-                    elif not missing:
-                        # missing: this message's own Observable report failed. An earlier one must not stand in for it.
-                        companion = self.recent_companion('observable' if spark_source else 'spark', owner)
-                        if companion:
-                            minutes, earlier = companion
-                            if spark_source:
-                                observable = earlier
-                            else:
-                                overview = earlier
-                            pairing = {'how': 'recent_message', 'minutes_apart': minutes,
-                                       'context_only': 'observable' if spark_source else 'spark',
-                                       'note': '上一份是同一发送者几分钟前发的，只作背景，不要重新逐项分析它'}
-                    if pairing and overview is not None and observable is not None:
-                        pairing['consistency'] = correlate(overview, observable)
-                        if pairing['how'] == 'recent_message' and pairing['consistency']['verdict'] not in ('overlapping', 'near'):
-                            # Not clearly the same server at the same time: do not hand it to the model at all.
-                            if spark_source:
-                                observable = None
-                            else:
-                                overview = None
-                            pairing = dict(pairing, dropped=pairing['consistency']['verdict'])
-                    tags = comparison = previous = skipped = None
-                    if spark_source:
-                        tags = self.tags(text, overview)
-                        if COMPARE.search(text):
-                            comparison, previous, skipped = await self.comparison(owner, overview, tags, trace)
-                    elif COMPARE.search(text):
-                        skipped = 'Observable 报告暂不支持历史对比'
-                    prompt = user_payload(text, overview, comparison, previous, skipped, observable=observable, pairing=pairing)
-                    instructions = system_prompt(self.policy, self.guide,
-                                                 reply_requirements(self.config.get('analysis_prompt', ''), self.default_reply_prompt))
-                    for attempt, provider_id in enumerate(providers):
-                        logger.info('Spark [%s] model start; attempt=%s/%s provider=%s', trace, attempt+1, len(providers), provider_id)
-                        result, error, stuck = await self.ask(event, provider_id, prompt, instructions, session, owner, trace)
-                        if error is None:
-                            break
-                        logger.warning('Spark provider attempt %s failed: %s', attempt+1, type(error).__name__)
-                        # A model task that ignored cancellation could still send a request: no fallback then.
-                        if stuck or attempt+1 == len(providers):
-                            raise error
-                        yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(error).__name__}），使用下一个模型继续尝试。')
-                    history_id = await self.save_history(owner, tags, overview, result, trace) if spark_source else None
-                    logger.info('Spark [%s] history saved=%s; sending final result', trace, history_id or False)
-                    yield event.plain_result(bound_reply(plain_text(result))+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing, missing))
-                    logger.info('Spark [%s] result delivered', trace)
-                finally:
-                    failure = sys.exc_info()[1]
-                    if spark_source and session and not isinstance(failure, (asyncio.CancelledError, GeneratorExit)):
-                        try:
-                            await self.charts.deliver(event, session,
-                                lambda: not self._terminating and bool(self.config.get('chart_enabled', False)),
-                                str(self.config.get('chart_timezone', 'UTC')))
-                        except Exception as exc:
-                            logger.warning('Spark chart cleanup failed: %s', type(exc).__name__)
+                        # The Spark report is already loaded: carry on with it alone and say what was left out.
+                        logger.warning('Spark [%s] observable skipped: %s', trace, type(exc).__name__)
+                        lost = str(exc) if isinstance(exc, (ProfileError, LoadTimeout)) else type(exc).__name__
+                        obs_source, observable = None, None
+                        missing = f'Observable 报告未能读取（{lost}），本次只分析 Spark 报告'
+                    label = 'Spark'
+                if spark_source:
+                    self.remember(owner, 'spark', overview)
+                if obs_source:
+                    self.remember(owner, 'observable', observable)
+                # Both kinds in this request, or the other kind sent recently by the same requester.
+                companion = pairing = None
+                if spark_source and obs_source:
+                    pairing = {'how': 'same_message'}
+                elif not missing:
+                    # missing: this message's own Observable report failed. An earlier one must not stand in for it.
+                    companion = self.recent_companion('observable' if spark_source else 'spark', owner)
+                    if companion:
+                        minutes, earlier = companion
+                        if spark_source:
+                            observable = earlier
+                        else:
+                            overview = earlier
+                        pairing = {'how': 'recent_message', 'minutes_apart': minutes,
+                                   'context_only': 'observable' if spark_source else 'spark',
+                                   'note': '上一份是同一发送者几分钟前发的，只作背景，不要重新逐项分析它'}
+                if pairing and overview is not None and observable is not None:
+                    pairing['consistency'] = correlate(overview, observable)
+                    if pairing['how'] == 'recent_message' and pairing['consistency']['verdict'] not in ('overlapping', 'near'):
+                        # Not clearly the same server at the same time: do not hand it to the model at all.
+                        if spark_source:
+                            observable = None
+                        else:
+                            overview = None
+                        pairing = dict(pairing, dropped=pairing['consistency']['verdict'])
+                tags = comparison = previous = skipped = None
+                if spark_source:
+                    tags = self.tags(text, overview)
+                    if COMPARE.search(text):
+                        comparison, previous, skipped = await self.comparison(owner, overview, tags, trace)
+                elif COMPARE.search(text):
+                    skipped = 'Observable 报告暂不支持历史对比'
+                prompt = user_payload(text, overview, comparison, previous, skipped, observable=observable, pairing=pairing)
+                instructions = system_prompt(self.policy, self.guide,
+                                             reply_requirements(self.config.get('analysis_prompt', ''), self.default_reply_prompt))
+                for attempt, provider_id in enumerate(providers):
+                    logger.info('Spark [%s] model start; attempt=%s/%s provider=%s', trace, attempt+1, len(providers), provider_id)
+                    result, error, stuck = await self.ask(event, provider_id, prompt, instructions, session, owner, trace)
+                    if error is None:
+                        break
+                    logger.warning('Spark provider attempt %s failed: %s', attempt+1, type(error).__name__)
+                    # A model task that ignored cancellation could still send a request: no fallback then.
+                    if stuck or attempt+1 == len(providers):
+                        raise error
+                    yield event.plain_result(f'分析模型第{attempt+1}次尝试失败（{type(error).__name__}），使用下一个模型继续尝试。')
+                history_id = await self.save_history(owner, tags, overview, result, trace) if spark_source else None
+                logger.info('Spark [%s] history saved=%s; sending final result', trace, history_id or False)
+                yield event.plain_result(bound_reply(plain_text(result))+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing, missing))
+                logger.info('Spark [%s] result delivered', trace)
+
+                # Text analysis succeeded: only now is a chart worth the extra wait. Failure paths never reach here.
+                if spark_source and session:
+                    try:
+                        await self.charts.deliver(event, session,
+                            lambda: not self._terminating and bool(self.config.get('chart_enabled', False)),
+                            str(self.config.get('chart_timezone', 'UTC')))
+                    except Exception as exc:
+                        logger.warning('Spark chart cleanup failed: %s', type(exc).__name__)
 
         except asyncio.CancelledError:
             raise

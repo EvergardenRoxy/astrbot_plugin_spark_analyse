@@ -15,49 +15,66 @@ from astrbot.api import logger
 
 
 class DeliveryLedger:
-    def __init__(self, path):
+    def __init__(self, path, retention_days=30):
         self.path = Path(path)
-        self.sent = set()  # Fail-safe after a successful send whose DB acknowledgement fails.
+        self.retention = retention_days*86400
+        self.sent = {}  # (chat, fingerprint) -> time. Fail-safe after a send whose DB acknowledgement fails.
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=1)
         try:
-            db.execute('CREATE TABLE IF NOT EXISTS chart_delivery (chat TEXT, fingerprint TEXT, token TEXT, sent INTEGER NOT NULL, PRIMARY KEY(chat,fingerprint))')
+            db.execute('CREATE TABLE IF NOT EXISTS chart_delivery (chat TEXT, fingerprint TEXT, token TEXT, sent INTEGER NOT NULL, at INTEGER, PRIMARY KEY(chat,fingerprint))')
+            if 'at' not in {row[1] for row in db.execute('PRAGMA table_info(chart_delivery)')}:
+                # Rows written before expiry existed start their retention now rather than expiring at once.
+                db.execute('ALTER TABLE chart_delivery ADD COLUMN at INTEGER')
+                db.execute('UPDATE chart_delivery SET at=?', (int(time.time()),))
+            db.commit()
         except Exception:
             db.close()
             raise
         return db
 
+    def expire(self, db, now):
+        # Sent rows are kept for the retention period only; the same report may chart again after it.
+        cutoff = now-self.retention
+        db.execute('DELETE FROM chart_delivery WHERE sent=1 AND at<?', (cutoff,))
+        for key in [k for k, at in self.sent.items() if at < cutoff]:
+            del self.sent[key]
+
     def recover(self):
-        # One plugin instance per data dir, like the existing parser lifecycle. Never erase sent rows.
+        # One plugin instance per data dir, like the existing parser lifecycle. Unfinished claims are discarded.
         if not self.path.exists():
             return
         db = self.connect()
         try:
             with db:
                 db.execute('DELETE FROM chart_delivery WHERE sent=0')
+                self.expire(db, int(time.time()))
         finally:
             db.close()
 
     def claim(self, chat, fingerprint):
-        if (chat, fingerprint) in self.sent:
-            return None
+        now = int(time.time())
         token = uuid.uuid4().hex
         db = self.connect()
         try:
             with db:
-                cursor = db.execute('INSERT OR IGNORE INTO chart_delivery VALUES (?,?,?,0)', (chat, fingerprint, token))
+                self.expire(db, now)
+                if (chat, fingerprint) in self.sent:
+                    return None
+                cursor = db.execute('INSERT OR IGNORE INTO chart_delivery VALUES (?,?,?,0,?)', (chat, fingerprint, token, now))
                 return token if cursor.rowcount else None
         finally:
             db.close()
 
     def complete(self, chat, fingerprint, token):
-        self.sent.add((chat, fingerprint))
+        now = int(time.time())
+        self.sent[(chat, fingerprint)] = now
         db = self.connect()
         try:
             with db:
-                cursor = db.execute('UPDATE chart_delivery SET sent=1 WHERE chat=? AND fingerprint=? AND token=?',
-                                    (chat, fingerprint, token))
+                cursor = db.execute('UPDATE chart_delivery SET sent=1, at=? WHERE chat=? AND fingerprint=? AND token=?',
+                                    (now, chat, fingerprint, token))
                 if not cursor.rowcount:
                     raise RuntimeError('Chart delivery claim lost')
         finally:
@@ -123,7 +140,7 @@ class ChartManager:
                     raise TimeoutError('Chart rendering timed out')
                 try:
                     await asyncio.wait_for(asyncio.shield(waiter), .2)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     continue
             status = directory/'render.json'
             if process.returncode or not status.exists() or status.stat().st_size > 1024:
