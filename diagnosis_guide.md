@@ -1,14 +1,13 @@
 # 诊断手册
 
 ## 判读 triage
-load=none：服务器整体不卡。不要把占比较高的部分说成“问题”；如果 spikes=true，重点讲尖峰。
-load=mild：轻微过载。多人、多维度的服务器很常见（原版在一个线程上依次计算所有维度），一般不需要紧急处理；用户确实感到卡顿时再找主要来源。
-load=sustained：持续过载。优先找出耗时最多的一两个来源。
-spikes=true：存在偶发的长 tick。平均值正常不代表不卡，普通采样常常抓不到尖峰，应建议专门抓尖峰（见“后续采样”）。常见诱因：自动保存、生成新区块、玩家登录、大量实体同时加载、GC 停顿。
-wait_kind=between_ticks：等待主要是 tick 之间的空闲，说明有余量，不是问题。
-wait_kind=in_tick：tick 已超出预算，等待发生在 tick 内。看等待热点（如 Unsafe.park）的调用路径，找出它在等什么：多线程或异步的模组/插件、区块加载、存档、锁。如果是在等其他线程，真正的耗时不在这份报告里，建议用 --thread * 重新采样。
-wait_kind=unknown：无法判断等待的性质，不要把等待说成空闲，也不要说成卡顿原因。
-chunks_per_player：每名玩家约加载 (2×视距+1)² 个区块，视距 10 时约 441 个。明显偏多时，检查视距设置、区块加载器和强制加载的区块。
+load=none：结束时最近一分钟未见持续过载。先检查 window_load 与 window_summary；采样窗口有异常时单独说明，不扩大为整段采样或玩家体验正常。不要只因占比高就说有问题。
+load=mild：最近一分钟轻微过载，结合用户现象与实际目标 tick rate 找主要来源，不直接当作故障。
+load=sustained：最近一分钟持续过载。优先找出耗时最多的一两个来源，但全期间热点仍需与异常窗口核对。
+spikes=true：最近一分钟有明显长 tick；spikes=false 不排除更早窗口的异常。window_summary 的 peak_mspt、worst_tps、worst_median 保留了原始窗口 ID，使用 windows 查询该时段，再查询同窗口热点。普通采样未必充分覆盖尖峰，必要时专门抓尖峰（见“后续采样”）。
+wait_kind=unknown：MSPT 中位数不能定位等待，不能自动说成空闲或卡顿原因。看等待方法的 callers 路径，判断它可能在等哪类任务，再找同期窗口或其他线程印证；如果当前没采到相关线程，建议 --thread *。filtered_ticks 表示只保留慢 tick，等待占比只属于这些入选样本。
+region_threads：Folia 的多个区域线程各自工作、各自等待；分开看热点，不把最忙区域当成全服唯一主线程，也不把等待百分比简单求和。
+chunks_per_player：来自区块数峰值所在的同一窗口，作为排查线索。单玩家覆盖与视距有关，但玩家重叠、强制加载、出生点和多个维度都会影响总数；明显偏多时核对视距、区块加载器和强制加载的区块，不能单凭比值断定设置错误。
 world：实体总数和类型分布。某类实体大量堆积，或集中在少数区块时，给出维度和方块坐标（block_x、block_z），方便到现场检查。changed_game_rules 里 randomTickSpeed 调高会增加区块 tick 的开销。
 
 ## 判读 Observable
@@ -22,7 +21,7 @@ trace：by_type 里的 top_self_frames 是该类型采样点最多的方法，�
 ## 平台差异
 模组端（Forge、NeoForge）：source 是模组名。部分版本（如 Forge 1.20.1）运行时的方法名是混淆编号（形如 m_12345_），这时依据类名、source 和调用路径判断，不要猜测方法含义。
 插件端（Paper、Folia、Leaf 等；platform.name 为 Bukkit，platform.brand 写明具体服务端）：source 是插件名。可以建议该服务端自身的配置方向（例如 Paper 的世界配置），不确定配置项的确切名称时只说明方向，不要编造名称。
-Folia：tick 在多个区域线程上运行，没有单一主线程，报告里的 tick 线程是区域调度线程。
+Folia：tick 在多个区域线程上运行，没有单一主线程。只将 role=region_tick 的线程按区域分析；名称未识别或线程池被合并时角色为 unknown，不凭耗时大小猜测。
 
 ## 常见来源与第一步检查
 实体（实体 tick、生物 AI、寻路）：数量多时清理堆积、限制刷怪塔和繁殖；数量不多但耗时高时，是某类实体的 AI 开销大，按类型定位。

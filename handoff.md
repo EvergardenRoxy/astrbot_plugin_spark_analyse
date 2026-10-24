@@ -303,8 +303,8 @@ file sent with a `/spark` caption (Telegram, Discord) and tool mode with an atta
   re-reading §2.2, since doing so brings back the extra main-model call.
 - Config schema: keys and types are a compatibility surface for existing installs. A default change only reaches
   new installs (AstrBot fills missing keys only), so treat it as a product decision and note it in CHANGELOG.
-- Do not classify waits (or anything else) by method names that only some platforms or versions use.
-  Between-tick idle versus in-tick wait comes from MSPT in `triage()` (§12).
+- Do not classify waits by version-specific Minecraft method names. The MSPT-only classification in §12 is
+  superseded by §26: a rolling median cannot locate sampled waits; keep `wait_kind=unknown`.
 - Load thresholds live only in `spark_core/briefing.py`. Prompt files refer to `triage.load` / `triage.spikes` /
   `triage.wait_kind`
   and must not restate the numbers (CHANGELOG may, as a record).
@@ -1319,4 +1319,36 @@ no PR was created.
 - **Not changed:** the AI statements in the README and CHANGELOG headers (they still name 1.0.3 to 1.0.7); the
   maintainer decides their wording.
 - **Not tested live:** 1.0.8 has not been run on a chat platform; 216 automated tests pass.
+
+## 26. Minecraft evidence and diagnosis improvements (Unreleased)
+
+Requested by the maintainer after comparing main (`ebecd4e`) with official spark-viewer master
+`05d68bda52ef483122c1498794dbc2cb5e3ada78`: design substantive Minecraft-focused improvements and commit them.
+This request authorizes implementation; the older plan-first convention is not a blocker for this work.
+Design, tradeoffs and limitations: `docs/minecraft-analysis-design.md`.
+
+- `profile.py`: parser metadata 0.2.0; report target tick rate/budget, explicit rolling metric scope, platform/name-based
+  roles (unknown for grouped threads), method/line/class source specificity, method-self aggregation with an actual
+  representative node, bounded extrema across every recorded window, and `methods`/`windows` queries. Raw node
+  queries stay available. Full untruncated signatures and sources are group keys; recursive inclusive is not summed.
+- `briefing.py`: preserve default-server load classes while scaling to actual tick targets; do not apply server load
+  classes to non-server platforms. Wait fraction remains measured data; neither median nor a generic parked frame
+  establishes idle capacity. Recent and window load signals remain separate. Player/chunk ratio uses one snapshot.
+- Per-tick self costs require a usable count: total or filtered included ticks for the full server-tick tree, unfiltered
+  window ticks for one window. No global-tick divisor for Folia regions. Query counts and context caps are unchanged.
+- `history.py`: compare target TPS, budget and grouping; scope labels are not numeric health deltas. Old histories
+  remain readable but missing conditions are conservatively different. Runtime metadata bounds and transport limits
+  are unchanged.
+- `main.py` exposes the new read-only views to the model. Built-in policy/guide and README/checklist explain scope,
+  representative paths, thread roles and unknown waits. User-editable reply prompt/config keys are unchanged.
+- `tests/test_minecraft_analysis.py`: regression scenarios fail on the old implementation, plus a real-worker test
+  verifies serialization and both new query views. Existing wait tests now assert the corrected uncertainty contract.
+- A 100,000-unique-method synthetic report through a real worker parsed and answered a methods query in ~1.61 s;
+  overview 4,511 bytes, query 20 rows. This is a smoke measurement, not a million-node benchmark.
+- Validation: all 236 tests pass on local Python 3.12 (216 existing + 20 new); package generation and ZIP integrity
+  checks pass (26 entries), as does `git diff --check`. Python 3.13 is left to the existing CI matrix.
+
+Not verified live in AstrBot/Minecraft or with a real model. No new release/version bump. Observable's own budget
+remains a default-tick-rate estimate; the policy explicitly prevents applying that label as proof on a paired Spark
+report with another target. Automatic deobfuscation and full metrics timelines remain outside this change.
 

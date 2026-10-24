@@ -2,6 +2,7 @@
 import hashlib
 import heapq
 import math
+import re
 from .proto.spark_sampler_pb2 import SamplerData
 
 SCHEMA = '03210f75c3b040f1bf7b369761573b83c75bb5ce'
@@ -12,7 +13,8 @@ class ProfileError(ValueError):
 
 def present_number(message, name):
     # proto3 scalar zero has no presence; do not invent a measured zero.
-    return getattr(message, name) if name in {f.name for f, _ in message.ListFields()} else None
+    value = getattr(message, name) if name in {f.name for f, _ in message.ListFields()} else None
+    return None if isinstance(value, float) and not math.isfinite(value) else value
 
 
 def present_count(message, name):
@@ -148,7 +150,9 @@ class Profile:
         m = self.data.metadata
         p = m.platform_metadata
         s = m.platform_statistics
-        return {'fingerprint': self.fingerprint, 'schema': SCHEMA, 'parser': '0.1.0',
+        target = s.tps.game_target_tps if s.tps.game_target_tps > 0 else 20
+        budget = s.mspt.game_max_ideal_mspt if s.mspt.game_max_ideal_mspt > 0 else 1000 / target
+        return {'fingerprint': self.fingerprint, 'schema': SCHEMA, 'parser': '0.2.0',
                 'runtime': self.runtime_metadata(),
                 'platform': {'type': p.type, 'name': p.name[:240], 'version': p.version[:240],
                              'minecraft': p.minecraft_version[:120], 'spark': p.spark_version[:120],
@@ -158,31 +162,93 @@ class Profile:
                              'interval_us': m.interval, 'start_ms': m.start_time,
                              'end_ms': m.end_time or None,
                              'aggregator': m.data_aggregator.type,
+                             'thread_grouper': m.data_aggregator.thread_grouper,
+                             'thread_dumper': m.thread_dumper.type,
+                             'target_tps': target, 'tick_budget_ms': budget,
+                             'target_basis': 'report' if s.tps.game_target_tps > 0 else 'default_20_tps',
+                             'number_of_ticks': m.number_of_ticks or None,
                              'tick_threshold': m.data_aggregator.tick_length_threshold,
                              'included_ticks': m.data_aggregator.number_of_included_ticks},
-                'health': {'tps_1m': present_number(s.tps, 'last1m'),
+                'health': {'scope': 'last_1m_at_report_end',
+                           'tps_1m': present_number(s.tps, 'last1m'),
+                           'tps_5m': present_number(s.tps, 'last5m'),
                            'mspt_median': present_number(s.mspt.last1m, 'median'),
                            'mspt_p95': present_number(s.mspt.last1m, 'percentile95'),
                            'mspt_max': present_number(s.mspt.last1m, 'max'),
+                           'mspt_5m_median': present_number(s.mspt.last5m, 'median'),
+                           'mspt_5m_p95': present_number(s.mspt.last5m, 'percentile95'),
+                           'mspt_5m_max': present_number(s.mspt.last5m, 'max'),
                            'cpu_process_1m': present_number(m.system_statistics.cpu.process_usage, 'last1m')},
                 'threads': [{'id': i, 'name': t.name[:120], 'inclusive_ms': sum(t.times),
-                             'nodes': len(t.children)} for i, t in enumerate(self.data.threads)][:100],
+                             'role': self.thread_role(t), 'nodes': len(t.children)}
+                            for i, t in enumerate(self.data.threads)][:100],
                 'threads_truncated': len(self.data.threads) > 100,
                 'windows': self.windows[:120], 'windows_truncated': len(self.windows) > 120,
-                'window_health': [{'window': w, 'tps': present_number(s, 'tps'),
-                                   'mspt_median': present_number(s, 'mspt_median'),
-                                   'mspt_max': present_number(s, 'mspt_max'),
-                                   'players': present_count(s, 'players'),
-                                   'entities': present_count(s, 'entities'),
-                                   'tile_entities': present_count(s, 'tile_entities'),
-                                   'chunks': present_count(s, 'chunks')}
-                                  for w, s in sorted(self.data.time_window_statistics.items())][:120],
+                'window_health': [self.window_row(w) for w in sorted(self.windows)[:120]],
+                'window_summary': self.window_summary(),
                 'world': self.world_statistics(),
                 'platform_truncated': any(len(value) > limit for value, limit in (
                      (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120),
                      (p.brand, 120))),
                  'limitations': ['scalar absent/zero reported as null', 'no automatic obfuscation mapping',
-                                'class source only; not mod causality', 'thread share is not CPU share']}
+                                'source mapping is not mod causality', 'thread share is not CPU share']}
+
+    def thread_role(self, thread):
+        """Roles require explicit platform/name evidence; grouped pools are not individual tick threads."""
+        m = self.data.metadata
+        if m.data_aggregator.thread_grouper != 0:
+            return 'unknown'
+        p = m.platform_metadata
+        if p.type == 1 and thread.name == 'Render thread':
+            return 'client_render'
+        if p.type != 0:
+            return 'unknown'
+        if 'folia' in (p.name+' '+p.brand).casefold():
+            return 'region_tick' if re.fullmatch(r'Region Scheduler Thread #\d+', thread.name) else 'unknown'
+        return 'server_tick' if thread.name == 'Server thread' else 'unknown'
+
+    def window_row(self, window):
+        s = self.data.time_window_statistics.get(window)
+        row = {'window': window}
+        for key in ('tps', 'mspt_median', 'mspt_max', 'cpu_process', 'cpu_system'):
+            row[key] = present_number(s, key) if s is not None else None
+        for key in ('players', 'entities', 'tile_entities', 'chunks', 'ticks', 'duration', 'start_time', 'end_time'):
+            row[key] = present_count(s, key) if s is not None else None
+        return row
+
+    def window_summary(self):
+        """Scan every recorded window, keeping only bounded extrema with their original window IDs."""
+        summary = {'scope': 'all_recorded_windows', 'window_count': len(self.windows),
+                   'windows_with_tps': 0, 'windows_with_mspt': 0}
+        extrema = (('worst_tps', 'tps', False), ('worst_median', 'mspt_median', True),
+                   ('peak_mspt', 'mspt_max', True), ('peak_players', 'players', True),
+                   ('peak_chunks', 'chunks', True))
+        for window in self.windows:
+            row = self.window_row(window)
+            summary['windows_with_tps'] += row['tps'] is not None
+            summary['windows_with_mspt'] += row['mspt_median'] is not None
+            for name, key, largest in extrema:
+                value = row[key]
+                previous = summary.get(name)
+                if value is not None and (previous is None or
+                        (value > previous[key] if largest else value < previous[key])):
+                    summary[name] = row
+        return summary
+
+    def node_source(self, node):
+        """Same specificity order as the official viewer; a mapping is ownership evidence, not causality."""
+        for mapping, key, evidence in (
+                (self.data.method_sources, node.class_name+';'+node.method_name+';'+node.method_desc, 'method_mapping'),
+                (self.data.line_sources, node.class_name+';'+str(node.line_number), 'line_mapping'),
+                (self.data.class_sources, node.class_name, 'class_mapping')):
+            if evidence == 'method_mapping' and not node.method_desc:
+                continue
+            if evidence == 'line_mapping' and not node.line_number:
+                continue
+            source = mapping.get(key)
+            if source:
+                return source, evidence
+        return None, 'unknown'
 
     def world_statistics(self):
         """Entity counts Spark stores with the report (absent on older reports); bounded summaries only."""
@@ -235,12 +301,12 @@ class Profile:
     def evidence_pack(self):
         """Bounded representative self hotspots; never sum inclusive ancestors."""
         selected = sorted(range(len(self.data.threads)), key=lambda i: (
-            self.data.threads[i].name not in ('Server thread', 'Render thread'),
+            self.thread_role(self.data.threads[i]) == 'unknown',
             -sum(self.data.threads[i].times)))[:4]
         threads = []
         for ti in selected:
             t = self.data.threads[ti]
-            result = self.query(thread=ti)
+            result = self.query(view='methods', thread=ti)
             hotspots = [r for r in result['rows'][:5] if r['self_ms'] > 0]
             for r in hotspots:
                 ids, current = [], r['node']
@@ -255,27 +321,49 @@ class Profile:
                 r['path_omitted_frames'] = max(0, len(ids)-8)
             covered = sum(r['self_ms'] for r in hotspots)
             total = result['denominator_ms']
-            threads.append({'thread': ti, 'name': t.name[:120], 'window': None,
+            threads.append({'thread': ti, 'name': t.name[:120], 'role': self.thread_role(t), 'window': None,
                             'denominator_ms': total, 'wait_ms': self.waiting(ti),
                             'selected_self_ms': covered,
                             'selected_self_coverage_pct': 100*covered/total if total else None,
                             'hotspots': hotspots, 'remaining_sampled_ms': max(0, total-covered)})
-        return {'unit': 'sampled_ms', 'threads': threads,
+        return {'unit': 'sampled_ms', 'hotspot_view': 'methods', 'threads': threads,
                 'omitted_threads': len(self.data.threads)-len(selected),
                 'limits': {'threads': 4, 'hotspots_per_thread': 5, 'path_frames': 8},
-                'coverage_meaning': 'selected disjoint node self / thread total; not causal confidence or CPU share',
+                'coverage_meaning': 'selected disjoint method self / thread total; not causal confidence or CPU share',
+                'path_meaning': 'one representative occurrence, not the complete cost of this path',
                 'scope': 'all recorded windows; temporal findings require window query'}
 
     def query(self, view='hotspots', thread=0, node=-1, window=None, search='', offset=0):
+        if view == 'windows':
+            if not _integer(offset) or not 0 <= offset <= min(len(self.windows), MAX_QUERY_OFFSET):
+                raise ProfileError('分页offset无效')
+            if window is not None and (not _integer(window) or window not in self.windows):
+                raise ProfileError('窗口ID无效')
+            ids = [window] if window is not None else sorted(self.windows)
+            rows = [self.window_row(w) for w in ids[offset:offset+21]]
+            return {'fingerprint': self.fingerprint, 'scope': 'recorded_windows', 'rows': rows[:20],
+                    'next_offset': offset+20 if len(rows)>20 and offset+20 <= MAX_QUERY_OFFSET else None}
         if not _integer(thread) or not 0 <= thread < len(self.data.threads):
             raise ProfileError('线程ID无效')
         t = self.data.threads[thread]
-        if window is not None and window not in self.windows:
+        if window is not None and (not _integer(window) or window not in self.windows):
             raise ProfileError('窗口ID无效')
         wi = self.windows.index(window) if window is not None else None
         def value(n):
             return sum(n.times) if wi is None else n.times[wi]
         total = value(t)
+        ticks = None
+        if self.thread_role(t) in ('server_tick', 'region_tick'):
+            m = self.data.metadata
+            filtered = m.data_aggregator.type == 1 or m.data_aggregator.tick_length_threshold > 0
+            # Folia does not have one server tick counter per region; never use the global count for it.
+            if self.thread_role(t) == 'server_tick':
+                if wi is None:
+                    ticks = m.data_aggregator.number_of_included_ticks if filtered else m.number_of_ticks
+                elif not filtered:
+                    stats = self.data.time_window_statistics.get(window)
+                    ticks = stats.ticks if stats is not None else None
+        ticks = ticks if ticks and ticks > 0 else None
         if not _integer(node) or not -1 <= node < len(t.children):
             raise ProfileError('节点ID无效')
         if not _integer(offset) or not 0 <= offset <= min(len(t.children), MAX_QUERY_OFFSET):
@@ -286,15 +374,42 @@ class Profile:
             own = inc - sum(value(t.children[c]) for c in n.children_refs)
             if own < -max(0.001, inc * 1e-6):
                 raise ProfileError('子调用采样超过父调用，拒绝输出错误self')
+            source, evidence = self.node_source(n)
             return {'node': i, 'method': (n.class_name + '.' + n.method_name)[:240],
+                    'method_desc': n.method_desc[:240],
                     'parent': self.parents[thread][i], 'inclusive_ms': inc, 'self_ms': max(0, own),
                     'inclusive_pct': 100 * inc / total if total else None,
                     'self_pct': 100 * max(0, own) / total if total else None,
-                    'source': self.data.class_sources.get(n.class_name, '')[:120] or None,
-                    'source_evidence': 'class_mapping_only', 'line': n.line_number or None}
-        if view == 'hotspots':
+                    'source': source[:120] if source else None,
+                    'source_evidence': evidence, 'line': n.line_number or None}
+        if view == 'methods':
+            # Sum self only: recursive inclusive frames overlap. Keep the largest self occurrence as the
+            # navigable representative. Full (untruncated) signatures and sources are aggregation keys.
+            groups = {}
+            for i, n in enumerate(t.children):
+                source, evidence = self.node_source(n)
+                key = (n.class_name, n.method_name, n.method_desc, source)
+                own = max(0, value(n) - sum(value(t.children[c]) for c in n.children_refs))
+                group = groups.get(key)
+                if group is None:
+                    groups[key] = [own, 1, i, own]
+                else:
+                    group[0] += own
+                    group[1] += 1
+                    if own > group[3]:
+                        group[2], group[3] = i, own
+            best = heapq.nlargest(offset+21, groups.values(), key=lambda g: g[0])[offset:]
+            rows = []
+            for own, count, representative, representative_self in best:
+                r = row(representative)
+                r['representative_inclusive_ms'] = r.pop('inclusive_ms')
+                r.pop('inclusive_pct')
+                r.update(self_ms=own, self_pct=100*own/total if total else None, occurrences=count,
+                         representative_self_ms=representative_self,
+                         self_ms_per_tick=own/ticks if ticks else None)
+                rows.append(r)
+        elif view == 'hotspots':
             # Keep bounded output, not bounded evidence: ranking visits every node.
-            import heapq
             ids = range(len(t.children))
             rows = heapq.nlargest(offset + 21, (row(i) for i in ids), key=lambda r: r['self_ms'])[offset:]
         elif view == 'children':
@@ -316,4 +431,6 @@ class Profile:
             raise ProfileError('不支持的查询view')
         return {'fingerprint': self.fingerprint, 'thread': thread, 'window': window,
                 'unit': 'sampled_ms', 'denominator_ms': total,
-                'filter': 'none', 'rows': rows[:20], 'next_offset': offset+20 if len(rows)>20 and offset+20 <= MAX_QUERY_OFFSET else None}
+                'filter': 'none', 'aggregation': 'method_self' if view == 'methods' else 'node',
+                'normalization_ticks': ticks,
+                'rows': rows[:20], 'next_offset': offset+20 if len(rows)>20 and offset+20 <= MAX_QUERY_OFFSET else None}

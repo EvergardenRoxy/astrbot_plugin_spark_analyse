@@ -50,22 +50,19 @@ class TriageTests(unittest.TestCase):
         signals = briefing.triage(overview(20.45, 11.6, 1806.36, players=3, chunks=7193, wait=604.0))
         self.assertEqual((signals['load'], signals['spikes']), ('none', True))
         self.assertEqual(signals['spike_ratio'], 155.7)
-        self.assertEqual((signals['wait_pct'], signals['wait_kind']), (60.4, 'between_ticks'))
+        self.assertEqual((signals['wait_pct'], signals['wait_kind']), (60.4, 'unknown'))
         self.assertEqual(signals['chunks_per_player'], 2397.7)
-        for phrase in ('未见持续过载', '偶发尖峰', '1806', '60.4%', '空闲', '7193'):
+        for phrase in ('未见持续过载', '偶发尖峰', '1806', '60.4%', '不能证明', '7193'):
             self.assertIn(phrase, signals['summary'])
 
-    def test_wait_kind_follows_the_tick_budget(self):
-        # A tick has a 50 ms budget. When the median tick ends well inside it, the thread waits for the next tick
-        # (spare capacity); once the median exceeds it there is no time between ticks, so waits are inside ticks.
-        # Only MSPT decides; TPS can dip from spikes alone (a Folia-like report: TPS 19.0, median 7.2 ms).
-        cases = [((19.0, 7.2), 'between_ticks'), ((20.0, 39.9), 'between_ticks'), ((20.0, 40.0), 'unknown'),
-                 ((19.0, 49.9), 'unknown'), ((19.0, 50.0), 'in_tick'), ((13.1, 54.7), 'in_tick'), ((20.0, None), 'unknown')]
-        for (tps, median), expected in cases:
+    def test_rolling_mspt_does_not_classify_sampled_waits(self):
+        # Recent rolling medians do not locate waits in a potentially longer or filtered call-tree sample.
+        cases = [(19.0, 7.2), (20.0, 39.9), (20.0, 40.0), (19.0, 49.9), (19.0, 50.0),
+                 (13.1, 54.7), (20.0, None)]
+        for tps, median in cases:
             with self.subTest(tps=tps, median=median):
-                self.assertEqual(briefing.triage(overview(tps, median, wait=500.0))['wait_kind'], expected)
-        self.assertIn('tick 内', briefing.triage(overview(13.1, 54.7, wait=747.0))['summary'])
-        self.assertIn('无法判断', briefing.triage(overview(20.0, 45.0, wait=300.0))['summary'])
+                self.assertEqual(briefing.triage(overview(tps, median, wait=500.0))['wait_kind'], 'unknown')
+        self.assertIn('需核对调用路径', briefing.triage(overview(13.1, 54.7, wait=747.0))['summary'])
 
     def test_no_players_gives_no_ratio(self):
         self.assertIsNone(briefing.triage(overview(players=0, chunks=500))['chunks_per_player'])

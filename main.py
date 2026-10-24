@@ -470,11 +470,11 @@ class SparkPlugin(Star):
             logger.debug('Spark [%s] query complete; rows=%s error=%s', trace, len(answer.get('rows', [])), bool(answer.get('error')))
             return json.dumps(answer, ensure_ascii=False)
 
-        return FunctionTool(name='spark_query', description='只读查询本次报告的调用树，用于补充证据。triage、evidence_pack 和 world 已足够回答时不要调用。每页最多 20 行，next_offset 不为空表示还有下一页。',
+        return FunctionTool(name='spark_query', description='只读查询本次报告的调用树或时间窗口，用于补充证据。triage、evidence_pack 和 world 已足够回答时不要调用。每页最多 20 行，next_offset 不为空表示还有下一页。',
             parameters={'type':'object','properties':{
-                'view':{'type':'string','enum':['hotspots','children','callers','search'],
-                        'description':'hotspots：按自身耗时（self）列出热点；children：按含子调用耗时（inclusive）列出 node 的子节点；callers：还原 node 到线程根的调用路径；search：按方法名字面搜索'},
-                'thread':{'type':'integer','description':'线程 ID，取自 overview.threads 或 evidence_pack；服务端主线程通常名为 Server thread'},
+                'view':{'type':'string','enum':['methods','hotspots','children','callers','search','windows'],
+                        'description':'methods：按方法签名和来源汇总 self 热点，node 为代表调用，可用 callers 追查；hotspots：原始节点 self 热点；children：node 子调用；callers：代表节点的调用路径；search：原始方法名字面搜索；windows：查询窗口健康数据，指定 window 可直查异常窗口'},
+                'thread':{'type':'integer','description':'线程 ID，取自 overview.threads 或 evidence_pack；windows 视图不使用此参数，可填 0'},
                 'node':{'type':'integer','description':'节点 ID，取自之前的结果；children 时 -1 表示线程根'},
                 'window':{'type':'integer','description':'时间窗口 ID，取自 overview.windows；不填表示全部窗口'},
                 'search':{'type':'string','maxLength':120,'description':'view=search 时要查找的方法名片段（字面匹配）'},

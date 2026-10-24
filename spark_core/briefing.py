@@ -13,10 +13,9 @@ import re
 SUSTAINED_TPS, SUSTAINED_MSPT = 15, 70
 MILD_TPS, MILD_MSPT = 19.5, 40
 SPIKE_RATIO, SPIKE_MIN_MS = 5, 500
-# A tick has a 50 ms budget. A median tick well inside it leaves the thread waiting for the next tick (spare
-# capacity); a median at or over it leaves no time between ticks, so waits happen inside ticks. MSPT decides
-# this on every platform, unlike method names; TPS is not used because spikes alone can lower it.
-TICK_BUDGET_MS, IDLE_WAIT_BELOW_MSPT = 50, 40
+# Default only. Spark reports can specify a different target tick rate and ideal tick budget.
+# A rolling median cannot establish whether parked samples occurred inside or between ticks.
+TICK_BUDGET_MS = 50
 
 # Observable cost classes: the share of the 50 ms tick budget that entities and block entities alone use.
 OBS_HEAVY_PCT, OBS_NOTABLE_PCT = 50, 20
@@ -65,45 +64,68 @@ def _largest(rows, key):
     return max((row[key] for row in rows if row.get(key) is not None), default=None)
 
 
+def _load(tps, median, target, budget):
+    """Keep the existing 20 TPS classes, scaled to the report's actual Minecraft tick target."""
+    if tps is None and median is None:
+        return 'unknown'
+    if (tps is not None and tps < target*SUSTAINED_TPS/20) or (median is not None and median > budget*SUSTAINED_MSPT/50):
+        return 'sustained'
+    if (tps is not None and tps < target*MILD_TPS/20) or (median is not None and median > budget*MILD_MSPT/50):
+        return 'mild'
+    return 'none'
+
+
+def _spikes(median, peak):
+    return None if peak is None or median is None else peak > SPIKE_MIN_MS and peak > SPIKE_RATIO*median
+
+
 def triage(overview):
     health = overview.get('health') or {}
+    sampling = overview.get('sampling') or {}
+    target = sampling.get('target_tps') or 20
+    budget = sampling.get('tick_budget_ms') or 1000/target
+    server = (overview.get('platform') or {}).get('type') == 0
     tps, median, peak = health.get('tps_1m'), health.get('mspt_median'), health.get('mspt_max')
-    if tps is None and median is None:
-        load = 'unknown'
-    elif (tps is not None and tps < SUSTAINED_TPS) or (median is not None and median > SUSTAINED_MSPT):
-        load = 'sustained'
-    elif (tps is not None and tps < MILD_TPS) or (median is not None and median > MILD_MSPT):
-        load = 'mild'
-    else:
-        load = 'none'
-    spikes = None if peak is None or median is None else peak > SPIKE_MIN_MS and peak > SPIKE_RATIO*median
+    load = _load(tps, median, target, budget) if server else 'unknown'
+    spikes = _spikes(median, peak) if server else None
     threads = (overview.get('evidence_pack') or {}).get('threads') or []
-    tick = threads[0] if threads else {}
+    tick = next((t for t in threads if server and t.get('role') == 'server_tick'), {})
+    regions = [t for t in threads if server and t.get('role') == 'region_tick']
     wait = _pct(tick.get('wait_ms'), tick.get('denominator_ms'))
-    if median is None:
-        wait_kind = 'unknown'
-    elif median < IDLE_WAIT_BELOW_MSPT:
-        wait_kind = 'between_ticks'
-    elif median >= TICK_BUDGET_MS:
-        wait_kind = 'in_tick'
-    else:
-        wait_kind = 'unknown'
+    filtered = sampling.get('aggregator') == 1 or (sampling.get('tick_threshold') or 0) > 0
+    wait_reason = 'filtered_ticks' if filtered else 'thread_role_unknown' if not tick else 'sampling_scope_not_proven'
     windows = overview.get('window_health') or []
-    players, chunks = _largest(windows, 'players'), _largest(windows, 'chunks')
+    window_summary = overview.get('window_summary') or {}
+    # Keep counts from one snapshot; separately maximising players and chunks invents a non-existent ratio.
+    chunk_window = window_summary.get('peak_chunks') or max(
+        (w for w in windows if w.get('chunks') is not None), key=lambda w: w['chunks'], default={})
+    players, chunks = chunk_window.get('players'), chunk_window.get('chunks')
     entities = (overview.get('world') or {}).get('total_entities')
     if entities is None:
         entities = _largest(windows, 'entities')
     per_player = round(chunks/players, 1) if chunks is not None and players else None
-    sampling = overview.get('sampling') or {}
     start, end = sampling.get('start_ms'), sampling.get('end_ms')
+    worst_tps = (window_summary.get('worst_tps') or {}).get('tps')
+    worst_median = (window_summary.get('worst_median') or {}).get('mspt_median')
+    window_load = _load(worst_tps, worst_median, target, budget) if server else 'unknown'
+    peak_window = window_summary.get('peak_mspt') or {}
+    window_spikes = _spikes(peak_window.get('mspt_median'), peak_window.get('mspt_max')) if server else None
     signals = {'load': load, 'spikes': spikes, 'tps': _round(tps, 2), 'mspt_median': _round(median),
                'mspt_p95': _round(health.get('mspt_p95')), 'mspt_max': _round(peak),
                'spike_ratio': round(peak/median, 1) if peak is not None and median else None,
-               'tick_thread': tick.get('name'), 'wait_pct': wait, 'wait_kind': wait_kind,
+               'metric_scope': 'last_1m_at_report_end', 'server_applicable': server,
+               'target_tps': target, 'tick_budget_ms': budget,
+               'tick_thread': tick.get('name'), 'wait_pct': wait, 'wait_kind': 'unknown',
+               'wait_reason': wait_reason, 'filtered_ticks': filtered,
+               'region_threads': [{'thread': t['thread'], 'name': t['name'],
+                                   'wait_pct': _pct(t.get('wait_ms'), t.get('denominator_ms'))} for t in regions],
+               'window_load': window_load,
+               'window_spikes': window_spikes, 'peak_window_mspt': peak_window.get('mspt_max'),
+               'worst_window_tps': worst_tps, 'worst_window_mspt_median': worst_median,
                'players': players, 'chunks': chunks, 'chunks_per_player': per_player, 'entities': entities,
                'sample_seconds': round((end-start)/1000, 1) if start and end and end > start else None,
-               'thresholds': {'sustained': f'TPS<{SUSTAINED_TPS} 或 MSPT中位数>{SUSTAINED_MSPT}毫秒',
-                              'mild': f'TPS<{MILD_TPS} 或 MSPT中位数>{MILD_MSPT}毫秒（未达持续过载）',
+               'thresholds': {'sustained': f'TPS<{target*SUSTAINED_TPS/20:g} 或 MSPT中位数>{budget*SUSTAINED_MSPT/50:g}毫秒',
+                              'mild': f'TPS<{target*MILD_TPS/20:g} 或 MSPT中位数>{budget*MILD_MSPT/50:g}毫秒（未达持续过载）',
                               'spike': f'MSPT最大值>{SPIKE_MIN_MS}毫秒且>{SPIKE_RATIO}倍中位数'}}
     signals['summary'] = _summary(signals)
     return signals
@@ -112,21 +134,29 @@ def triage(overview):
 def _summary(s):
     metrics = '，'.join(part for part in (f"TPS {s['tps']}" if s['tps'] is not None else '',
                                           f"MSPT中位数 {s['mspt_median']} 毫秒" if s['mspt_median'] is not None else '') if part)
-    parts = [{'none': f'未见持续过载（{metrics}）',
+    parts = [{'none': f'最近一分钟未见持续过载（{metrics}）',
               'mild': f'轻微过载（{metrics}），多人多维度服务器常见',
               'sustained': f'持续过载（{metrics}）',
-              'unknown': '报告缺少 TPS/MSPT，无法判断整体负载'}[s['load']]]
+              'unknown': '报告缺少 TPS/MSPT 或并非服务端，无法判断服务端负载'}[s['load']]]
+    if s['load'] in ('mild', 'sustained'):
+        parts[0] = '最近一分钟'+parts[0]
+    if s['server_applicable']:
+        parts.append(f"目标 {s['target_tps']:g} TPS，每 tick 预算 {s['tick_budget_ms']:g} 毫秒")
     if s['spikes']:
-        parts.append(f"存在偶发尖峰：最慢一次 tick {s['mspt_max']:.0f} 毫秒，约为中位数的 {s['spike_ratio']} 倍")
+        parts.append(f"最近一分钟存在偶发尖峰：最慢一次 tick {s['mspt_max']:.0f} 毫秒，约为中位数的 {s['spike_ratio']} 倍")
     elif s['spikes'] is False:
-        parts.append('未见明显尖峰')
+        parts.append('最近一分钟未见明显尖峰')
+    if s['window_load'] in ('mild', 'sustained'):
+        parts.append(f"采样窗口曾记录负载升高（最低 TPS {s['worst_window_tps']}，最高窗口 MSPT 中位数 {s['worst_window_mspt_median']} 毫秒；可能来自不同窗口），需核对对应时段")
+    if s['window_spikes']:
+        parts.append(f"采样窗口曾记录长 tick：{s['peak_window_mspt']:g} 毫秒，不能由结束时最近一分钟正常排除")
+    if s['filtered_ticks']:
+        parts.append('调用树只保留筛选的慢 tick，不能把它的等待占比解释成整段服务器空闲率')
     wait = s['wait_pct']
     if wait is not None and wait >= 1:
-        parts.append({'between_ticks': f'tick 线程约 {wait}% 的时间在等待，MSPT 中位数远低于 {TICK_BUDGET_MS} 毫秒的 tick 预算，'
-                                       f'这些主要是 tick 之间的空闲（有余量）',
-                      'in_tick': f'tick 线程约 {wait}% 的时间在等待，而 MSPT 中位数已达到 {TICK_BUDGET_MS} 毫秒的 tick 预算，'
-                                 f'tick 之间没有空闲，这些等待发生在 tick 内（在等其他线程、区块加载或锁）',
-                      'unknown': f'tick 线程约 {wait}% 的时间在等待，无法判断是 tick 之间的空闲还是 tick 内的等待'}[s['wait_kind']])
+        parts.append(f'tick 线程约 {wait}% 的采样为等待；滚动 MSPT 不能证明这些等待发生在 tick 之间还是 tick 内，需核对调用路径和同期窗口')
+    if s['region_threads']:
+        parts.append('Folia 使用多个区域 tick 线程；各线程等待比例分别记录，不能合并成服务器空闲率')
     if s['chunks'] is not None and s['players']:
         parts.append(f"{s['players']} 名玩家，已加载 {s['chunks']} 个区块（每人约 {s['chunks_per_player']:.0f} 个）")
     if s['entities'] is not None:

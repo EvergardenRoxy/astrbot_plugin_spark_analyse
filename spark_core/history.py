@@ -64,11 +64,13 @@ def compare(old, new):
     for key in ('name', 'version', 'minecraft', 'type'):
         if section(old, 'platform').get(key) != section(new, 'platform').get(key):
             reasons.append('platform.'+key)
-    for key in ('mode', 'engine', 'interval_us', 'aggregator', 'tick_threshold'):
+    for key in ('mode', 'engine', 'interval_us', 'aggregator', 'tick_threshold', 'target_tps', 'tick_budget_ms', 'thread_grouper'):
         if section(old, 'sampling').get(key) != section(new, 'sampling').get(key):
             reasons.append('sampling.'+key)
     delta = {}
     for key, value in section(new, 'health').items():
+        if isinstance(value, str):
+            continue  # Scope labels describe metrics, not numeric deltas.
         before = section(old, 'health').get(key)
         delta[key] = value-before if value is not None and before is not None else None
     return {'comparable_sampling': not reasons, 'different_conditions': reasons,
