@@ -11,6 +11,7 @@ class LoadTimeout(TimeoutError):
 from pathlib import Path
 from .transport import download, download_observable, fetch_file, observable_id, report_id
 from .profile import ProfileError
+from .telemetry import MAX_BUNDLE_BYTES
 
 
 class ReportSession:
@@ -131,6 +132,15 @@ class ReportSession:
             (self.directory/f'request-{i}.json').unlink()
             (self.directory/f'response-{i}.json').unlink()
             return result
+
+    async def export_telemetry(self, target):
+        answer = await self.query(op='telemetry_export')
+        if answer.get('error') or answer.get('schema_version') != 1 or not answer.get('ready'):
+            raise ProfileError('报告绘图数据导出失败')
+        source = self.directory/'telemetry.json'
+        if not source.is_file() or source.stat().st_size > MAX_BUNDLE_BYTES:
+            raise ProfileError('报告绘图数据超限')
+        await asyncio.to_thread(shutil.copyfile, source, target)
 
     async def close(self):
         self.failed = True

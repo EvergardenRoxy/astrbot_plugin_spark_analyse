@@ -52,6 +52,11 @@ class Profile:
         if not self.windows or len(set(self.windows)) != len(self.windows):
             raise ProfileError('时间窗口缺失或重复')
         self.parents = []
+        self.inconsistent_windows = set()
+        # Java's window boundary can differ by one sample. Permit at most ONE sample (capped at 10 ms)
+        # across the whole report, only when every full-period node total is still consistent.
+        quantization_budget = min(m.interval / 1000, 10) if m.sampler_engine == 0 and m.interval > 0 else 0
+        self.window_excess_ms = 0.0
         count = 0
         for t in self.data.threads:
             count += len(t.children)
@@ -83,10 +88,18 @@ class Profile:
                         raise ProfileError('调用深度超限')
                     depths[current] = depth
             for n in [t, *t.children]:
+                child_totals = [sum(t.children[c].times[wi] for c in n.children_refs)
+                                for wi in range(len(self.windows))]
+                aggregate = sum(n.times)
+                if sum(child_totals) > aggregate + max(0.001, aggregate*1e-6):
+                    raise ProfileError('报告内部数据不一致（子调用耗时大于父调用），无法得到可信占比，已拒绝分析以免给出错误结论；请用最新版Spark重新采样')
                 for wi, total in enumerate(n.times):
-                    children_total = sum(t.children[c].times[wi] for c in n.children_refs)
+                    children_total = child_totals[wi]
                     if children_total > total + max(0.001, total*1e-6):
-                        raise ProfileError('报告内部数据不一致（子调用耗时大于父调用），无法得到可信占比，已拒绝分析以免给出错误结论；请用最新版Spark重新采样')
+                        self.window_excess_ms += children_total-total
+                        if self.window_excess_ms > quantization_budget + 1e-9:
+                            raise ProfileError('报告内部数据不一致（子调用耗时大于父调用），超过允许的单个 Java 采样误差，已拒绝分析；请重新采样')
+                        self.inconsistent_windows.add(self.windows[wi])
             self.parents.append(parents)
 
     def runtime_metadata(self):
@@ -186,6 +199,10 @@ class Profile:
                 'windows': self.windows[:120], 'windows_truncated': len(self.windows) > 120,
                 'window_health': [self.window_row(w) for w in sorted(self.windows)[:120]],
                 'window_summary': self.window_summary(),
+                'window_consistency': {'status': 'limited_window_error' if self.inconsistent_windows else 'ok',
+                                       'unavailable_query_windows': sorted(self.inconsistent_windows),
+                                       'excess_ms': self.window_excess_ms,
+                                       'note': '整段聚合有效；列出的局部窗口禁止调用树定量查询，不将负 self 截成零' if self.inconsistent_windows else '未发现局部窗口采样不一致'},
                 'world': self.world_statistics(),
                 'platform_truncated': any(len(value) > limit for value, limit in (
                      (p.name, 240), (p.version, 240), (p.minecraft_version, 120), (p.spark_version, 120),
@@ -348,6 +365,8 @@ class Profile:
         t = self.data.threads[thread]
         if window is not None and (not _integer(window) or window not in self.windows):
             raise ProfileError('窗口ID无效')
+        if window in self.inconsistent_windows:
+            raise ProfileError('该窗口调用采样不一致，不能提供可信 self；请查询全部窗口汇总或窗口健康指标')
         wi = self.windows.index(window) if window is not None else None
         def value(n):
             return sum(n.times) if wi is None else n.times[wi]

@@ -83,7 +83,15 @@ def run():
                 continue
             try:
                 request = json.loads(request_path.read_text(encoding='utf-8'))
-                result = profile.query(**request)
+                if request == {'op': 'telemetry_export'} and not observable:
+                    from spark_core.telemetry import export
+                    bundle = export(profile)
+                    temp = directory/'telemetry.tmp'
+                    temp.write_text(json.dumps(bundle, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+                    temp.replace(directory/'telemetry.json')
+                    result = {'schema_version': 1, 'ready': True}
+                else:
+                    result = profile.query(**request)
             except Exception as exc:
                 result = {'error': str(exc)[:200]}
             target = directory/f'response-{sequence}.json'

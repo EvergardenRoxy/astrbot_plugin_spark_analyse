@@ -1,2 +1,4 @@
 aiohttp>=3.10,<4
 protobuf>=6.31.1,<7
+matplotlib>=3.10,<4
+tzdata>=2024.1

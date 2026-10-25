@@ -16,6 +16,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from .spark_core.session import ReportSession, LoadTimeout
 from .spark_core.profile import MAX_QUERY_OFFSET, ProfileError
 from .spark_core.history import History, compare
+from .spark_core.charts import ChartManager
 from .spark_core.transport import LINK, OBS_LINK, is_report_file
 from .spark_core.output import bound_reply, plain_text
 from .spark_core.cache import ProfileCache
@@ -49,7 +50,7 @@ def attachment(component):
     return local, url
 
 
-@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.8')
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.1.0')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -61,6 +62,8 @@ class SparkPlugin(Star):
             shutil.rmtree(stale, ignore_errors=True)
         self.cache = ProfileCache(self.root/'profiles.sqlite3', config.get('profile_cache_hours', 72))
         self.background_tasks = set()
+        self.charts = ChartManager(self.root)
+        self._terminating = False
         self.history = History(self.root/'history.sqlite3', bool(config.get('history_enabled', False)))
         self.policy = Path(__file__).with_name('analysis_policy.md').read_text(encoding='utf-8')
         self.guide = Path(__file__).with_name('diagnosis_guide.md').read_text(encoding='utf-8')
@@ -78,6 +81,7 @@ class SparkPlugin(Star):
         self.recent = {}
 
     async def initialize(self):
+        await self.charts.initialize()
         # AstrBot awaits this inside its plugin-load try, so nothing may escape. Plugins load one after
         # another: the purge runs off the event loop and waits at most 1 s for a lock. Only this plugin
         # writes the file, so a longer lock is external; skip and retry on the next load.
@@ -299,6 +303,16 @@ class SparkPlugin(Star):
                 logger.info('Spark [%s] history saved=%s; sending final result', trace, history_id or False)
                 yield event.plain_result(bound_reply(plain_text(result))+self.footnotes(skipped, history_id, tags['typed'] if tags else '', pairing, missing))
                 logger.info('Spark [%s] result delivered', trace)
+
+                # Text analysis succeeded: only now is a chart worth the extra wait. Failure paths never reach here.
+                if spark_source and session:
+                    try:
+                        await self.charts.deliver(event, session,
+                            lambda: not self._terminating and bool(self.config.get('chart_enabled', False)),
+                            str(self.config.get('chart_timezone', 'UTC')))
+                    except Exception as exc:
+                        logger.warning('Spark chart cleanup failed: %s', type(exc).__name__)
+
         except asyncio.CancelledError:
             raise
         except LoadTimeout as exc:
@@ -549,6 +563,7 @@ class SparkPlugin(Star):
         return ''.join(f'\n（{note}）' for note in notes)
 
     async def terminate(self):
+        self._terminating = True
         remaining = await cancel_bounded(self.background_tasks | self.tasks)
         if remaining:
             logger.warning('Spark terminate: %s tasks did not stop within 5s', len(remaining))
@@ -558,3 +573,5 @@ class SparkPlugin(Star):
                 await session.close()
             except Exception as exc:
                 logger.warning('Spark terminate: session close failed: %s', type(exc).__name__)
+
+        await self.charts.close()
