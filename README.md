@@ -5,13 +5,12 @@
 > [!IMPORTANT]
 > **AI 制作声明：Spark 报告分析采用生成式 AI 参与架构设计、编码、文档与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
 >
-> 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与更新日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.8 版本的修改方案制定、缺陷修复、新功能实现、测试、配置页说明与提示词重写，以及更新日志与交接文档（`handoff.md`）的编写。
+> 参与的 AI：**OpenAI Codex**；**Claude Sonnet 5.5**（通过 **Claude Code**），**Claude Opus 5.5**（通过 **Claude Code**）
 
 # 作者注
 
 这个项目从1.0.2版本开始转用了Claude Code，众所周知Claude的任务执行和代码能力很强，但是思维链是个黑箱
 #### 从1.0.2版本开始 本项目使用AI进行审查 + 目标实现上的手动复测
-所以这个项目也变成了一定意义上的许愿式coding
 #### 作为代替，AI在每次执行修改后，都会在changelog和handoff文档内记录操作，来方便后期debug与项目审查。
 
 # 修改核对清单
