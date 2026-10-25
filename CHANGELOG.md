@@ -7,10 +7,13 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## Unreleased
+## 1.1.0 - 2026-10-25
+
+> 本版本通过 **Claude Code** 实现（开发分支 `1025`），尚未经维护者在聊天平台实测。实现细节、假设与验证见 [handoff.md](handoff.md) 第 26、27、28 节。
 
 ### 首次分析附带四联图
 
+- 版本号升至 1.1.0。
 - 图表字体裁剪为约 1.5 MB（原 13 MB）：保留 ASCII、拉丁/希腊/西里尔、常用标点符号、日文假名、GB2312 汉字和渲染器自带标签；其余罕见字（如韩文、生僻汉字）在图中显示为缺字方框。重建脚本见 `tools/subset_chart_font.py`。
 - 修复 Python 3.10 下渲染轮询捕获 `TimeoutError` 不到 `asyncio.TimeoutError`，导致每次出图都失败的问题。
 

@@ -1320,7 +1320,7 @@ no PR was created.
   maintainer decides their wording.
 - **Not tested live:** 1.0.8 has not been run on a chat platform; 216 automated tests pass.
 
-## 26. Minecraft evidence and diagnosis improvements (Unreleased)
+## 26. Minecraft evidence and diagnosis improvements (released in 1.1.0)
 
 Requested by the maintainer after comparing main (`ebecd4e`) with official spark-viewer master
 `05d68bda52ef483122c1498794dbc2cb5e3ada78`: design substantive Minecraft-focused improvements and commit them.
@@ -1352,13 +1352,13 @@ Not verified live in AstrBot/Minecraft or with a real model. No new release/vers
 remains a default-tick-rate estimate; the policy explicitly prevents applying that label as proof on a paired Spark
 report with another target. Automatic deobfuscation and full metrics timelines remain outside this change.
 
-## 27. Once-per-chat quad charts (branch 1025, Unreleased)
+## 27. Once-per-chat quad charts (branch 1025, released in 1.1.0)
 
 User authorized implementation on a new branch `1025`, commit identity `EvergardenRoxy <fubukisanta@163.com>`,
 and explicitly requested no PR. Base: main at `08783a1`. User decisions: setting-only, default off, no separate
 chart command; a report is charted once per chat, shared across senders and remembered across restarts.
 If GC event telemetry is unavailable, panel 03 is main-thread mod/plugin Sources Top 7. Existing text entries,
-access rules, queue limits and report download limits remain in place. No release version bump.
+access rules, queue limits and report download limits remain in place. Version bump: see §28.
 
 Implementation overview and detailed limits: `docs/quadcharts.md`.
 
@@ -1377,8 +1377,9 @@ Implementation overview and detailed limits: `docs/quadcharts.md`.
   No expiry of sent records on cache/history cleanup. Claim/spawn/ack cancellation paths are supervised. A send
   that succeeds just before a crash and before the DB commit may repeat after restart; no cross-service atomic
   exactly-once guarantee is claimed. In-process successful-send fallback and explicit warning on ack failure.
-- `main.py`: same shared gate for chart work, chart delivery in the inner finally after model queries finish,
-  including model failure if the report loaded. Cancellation/GeneratorExit do not trigger new charts. Disabled
+- `main.py`: same shared gate for chart work. Chart delivery runs after the final text reply was yielded, only
+  when the text analysis succeeded (changed in §28; it used to run in a `finally`, including after model failure).
+  Failures, cancellation and GeneratorExit never trigger a chart. Disabled
   mode does not export, claim or render. Tool path still does not stop the main event. Only the current request's
   actual Spark session may chart; a remembered companion never triggers an old chart.
 - Image delivery awaits the SDK local image send; only PNG is retained for up to 10 minutes for adapters with
@@ -1404,3 +1405,29 @@ AstrBot 4.16.0 wheel was inspected read-only for image_result/send signatures. N
 AstrBot deployment was run; adapter-specific delivery remains a manual check. Python 3.13 is covered by the
 existing CI matrix, not by a claimed local run. No GC log/JFR import or live probe implementation in this scope.
 
+## 28. Review follow-ups and release prep for 1.1.0 (branch 1025)
+
+Maintainer reviewed the branch and decided: charts only after a successful text analysis (option b), 30-day ledger
+retention, subset the font, fix the rest; then bump to v1.1.0 on the same branch. No PR, no history rewrite.
+
+- `charts.py`: the render poll caught builtin `TimeoutError`, but `asyncio.wait_for` raises `asyncio.TimeoutError`,
+  which is a different class before Python 3.11, so every render failed on 3.10. Now `asyncio.TimeoutError`
+  (alias of the builtin on 3.11+). Not reproducible on the local 3.13 and not covered by a test.
+- `main.py`: `charts.deliver` moved out of the inner `finally` to just after the final reply; the extra `try`
+  indentation and the unused `import sys` were removed. `test_model_failure_does_not_deliver_chart` replaces the old
+  "model failure still charts" test.
+- `DeliveryLedger`: new `at` column; `expire()` drops sent rows older than 30 days (also from the in-memory `sent`
+  dict) at startup recovery and on every claim. Tables without the column are migrated with `at` = now, so existing
+  sent rows are not lost. The "sent once" semantics are now "once per 30 days".
+- Font: `SparkChartSans.otf` 13.1 MB -> 1.5 MB via `tools/subset_chart_font.py` (ASCII, Latin/Greek/Cyrillic,
+  punctuation, kana, GB2312 hanzi, every non-ASCII character in `chart_render.py`). Other characters (Hangul, rare
+  hanzi) draw as missing-glyph boxes. The old font stays in git history.
+- Render memory: the worker succeeded with `RLIMIT_AS` 1536/1024/768/512 MiB on the test sample, peak RSS about
+  86 MiB, so the shared cap was not changed. Large real reports were not measured.
+- Not changed on purpose: `triage.wait_kind` (documented interface, always `unknown`); `window_excess_ms` stays a
+  report-wide budget (no multi-thread sample available to tune it).
+- Release: `metadata.yaml` `v1.1.0`, `@register(...)` `1.1.0`, `## Unreleased` -> `## 1.1.0 - 2026-10-25`
+  (`test_version_is_consistent`), `checklist.md` status/package name/section headings, design doc wording.
+  The AI statements in README/CHANGELOG headers are untouched; the maintainer decides their wording.
+- Validation: 269 tests pass on local Python 3.13; a real render with the subset font was inspected visually.
+  Not run on a live chat platform.

@@ -50,7 +50,7 @@ def attachment(component):
     return local, url
 
 
-@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.0.8')
+@register('astrbot_plugin_spark', 'Evergarden_Roxy', '隔离解析Spark报告并使用专用模型分析', '1.1.0')
 class SparkPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
