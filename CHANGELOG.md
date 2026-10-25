@@ -1,7 +1,7 @@
 [![AI Co-created](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Sonnet%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明) [![AI Co-created](https://img.shields.io/badge/AI-Claude%20Opus%205.5%20%2B%20Claude%20Code-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](README.md#ai-制作声明)
 
 > [!IMPORTANT]
-> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 其中 **Claude Sonnet 5.5**（通过 **Claude Code**）参与代码审查、缺陷修复、测试与本日志整理；**Claude Opus 5.5**（通过 **Claude Code**）参与 1.0.3 至 1.0.7 版本的修改方案制定、缺陷修复、新功能实现（1.0.7 的 `.sparkprofile` 文件支持）、测试、配置页说明与提示词重写，以及本日志对应部分与交接文档 `handoff.md` 的编写。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
+> **AI 共创声明：本更新日志所记录的修改与日志本身，由项目维护者与生成式 AI 共同完成。** 参与的 AI：**OpenAI Codex**、**Claude Sonnet 5.5**（通过 **Claude Code**）、**Claude Opus 5.5**（通过 **Claude Code**）。AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。完整声明见 [README](README.md#ai-制作声明)。
 
 # 更新日志
 
